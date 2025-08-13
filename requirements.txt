@@ -1,0 +1,53 @@
+# Core Dependencies
+discord.py
+fastapi
+uvicorn[standard]
+
+# Database
+sqlalchemy
+alembic
+asyncpg  # PostgreSQL async driver
+
+# Data Validation & Settings
+pydantic
+pydantic-settings
+
+# HTTP Client & API Integrations
+httpx
+aiofiles
+
+# Environment & Configuration
+python-dotenv
+
+# Logging
+loguru
+
+# GitHub Integration
+PyGithub
+
+# Notion Integration
+notion-client
+
+# Google Calendar Integration (Optional)
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib
+
+# Caching & Task Queue (Optional)
+redis
+celery
+
+# Utilities
+python-dateutil
+pytz
+croniter
+
+# Security
+cryptography
+bcrypt
+
+# Image Processing (for embeds/avatars)
+Pillow
+
+# Monitoring & Health Checks
+psutil 

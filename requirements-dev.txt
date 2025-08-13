@@ -1,0 +1,38 @@
+# Include main requirements
+-r requirements.txt
+
+# Testing
+pytest
+pytest-asyncio
+pytest-cov
+pytest-mock
+pytest-xdist  # Parallel testing
+factory-boy  # Test data factories
+
+# Code Quality
+black
+ruff
+mypy
+pre-commit
+
+# Type Stubs
+types-python-dateutil
+types-pytz
+types-redis
+types-Pillow
+
+# Development Tools
+ipython
+ipdb
+
+# Documentation
+mkdocs
+mkdocs-material
+mkdocstrings[python]
+
+# Performance Profiling
+py-spy
+memory-profiler
+
+# Database Tools
+sqlalchemy-utils 
