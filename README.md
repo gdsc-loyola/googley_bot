@@ -1,4 +1,4 @@
-# 🤖 Googley
+# 🤖 Googley Bot
 
 **Googley** is a multipurpose automation bot built to simplify developer workflows, enhance team collaboration, and bridge communication across platforms. Built with **Discord**, **FastAPI**, **Python**, and **Telegram**, Googley connects your favorite tools like GitHub, Notion, and Google Calendar—so your team stays informed, focused, and in sync.
 
