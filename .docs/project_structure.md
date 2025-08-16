@@ -16,7 +16,9 @@ googley_bot/
 │   │   ├── github.py              # GitHub integration commands   
 │   │   ├── notion.py              # Notion integration commands 
 │   │   ├── sheets.py              # Google Sheets integration commands
-│   │   └── utils.py               # Utility commands (ping, etc.) 
+│   │   ├── calendar.py            # Google Calendar integration commands
+│   │   ├── telegram.py            # Telegram integration commands
+│   │   └── standup.py             # Standup integrations commands
 │   ├── integrations/
 │   │   ├── __init__.py
 │   │   ├── github/
@@ -40,6 +42,11 @@ googley_bot/
 │   │   │   ├── client.py          # Google Sheets API client 
 │   │   │   ├── schemas.py         # Pydantic models for Google Sheets data
 │   │   │   └── operations.py      # Google Sheets database operations
+│   │   └── calendar/ 
+│   │   │   ├── __init__.py
+│   │   │   ├── client.py          # Google Calendar API client 
+│   │   │   ├── schemas.py         # Pydantic models for Google Calendar data
+│   │   │   └── operations.py      # Google Calendar database operations
 │   ├── utils/
 │   │   ├── __init__.py
 │   │   ├── config.py              # Configuration management 
@@ -51,8 +58,11 @@ googley_bot/
 │   │   ├── config.py              # Configuration management
 │   │   ├── github.py              # Github related models
 │   │   ├── notion.py              # Notion related models
-│   │   ├── user.py                # User-related models 
-│   │   ├── tasks.py               # Task management models 
+│   │   ├── sheets.py              # Google Sheets related models
+│   │   ├── calendar.py            # Google Calendar related models
+│   │   ├── telegram.py            # Telegram related models
+│   │   ├── user.py                # User-related models
+│   │   └── standup.py             # Standup related models 
 │   ├── schemas/
 │   │   ├── __init__.py
 │   │   ├── github.py              # GitHub webhook schemas 
