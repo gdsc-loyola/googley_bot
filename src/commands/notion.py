@@ -363,6 +363,103 @@ class NotionCommands(commands.Cog):
             )
             logger.error(f"Error updating task: {e}")
 
+    @notion_group.command(
+        name="tasks", 
+        description="List tasks assigned to you"
+    )
+    async def list_user_tasks(
+        self,
+        interaction: discord.Interaction
+    ):
+        """List tasks assigned to the user."""
+        await interaction.response.defer()
+
+        try:
+            user_id = str(interaction.user.id)
+            
+            # Get tasks from database assigned to this user
+            async with AsyncSessionLocal() as session:
+                from sqlalchemy import select
+                
+                result = await session.execute(
+                    select(NotionTask).where(
+                        NotionTask.discord_user_id == user_id
+                    ).order_by(
+                        NotionTask.created_at.desc()
+                    )  # Show all tasks assigned to user
+                )
+                tasks = result.scalars().all()
+
+            if not tasks:
+                embed = discord.Embed(
+                    title="📋 No tasks found",
+                    description="You don't have any tasks assigned to you.",
+                    color=0x95a5a6
+                )
+                await interaction.followup.send(embed=embed)
+                return
+
+            # Group tasks by status
+            from collections import defaultdict
+            grouped_tasks = defaultdict(list)
+            
+            for task in tasks:
+                grouped_tasks[task.status].append(task)
+
+            # Status order for display
+            status_order = ["In progress", "Not started", "On hold", "Completed", "Cancelled"]
+            
+            # Status emojis
+            status_emojis = {
+                "Not started": "⚪",  # Grey/white
+                "On hold": "🟠",     # Orange
+                "In progress": "🔵", # Blue
+                "Completed": "🟢",   # Green
+                "Cancelled": "🔴"    # Red
+            }
+
+            # Create tasks list embed
+            embed = discord.Embed(
+                title=f"📋 Your tasks ({len(tasks)})",
+                color=0x3498db
+            )
+
+            # Add tasks grouped by status
+            for status in status_order:
+                if status in grouped_tasks and grouped_tasks[status]:
+                    status_tasks = grouped_tasks[status]
+                    status_emoji = status_emojis.get(status, "⚪")
+                    
+                    task_list = []
+                    for task in status_tasks:
+                        # Get priority
+                        priority = task.priority.value if hasattr(task.priority, 'value') else str(task.priority)
+                        
+                        # Task info with just priority since status is already grouped
+                        task_info = f"**{task.title}**\n{priority}"
+                        
+                        if task.description:
+                            desc_preview = task.description[:80] + "..." if len(task.description) > 80 else task.description
+                            task_info += f"\n*{desc_preview}*"
+                        
+                        task_list.append(task_info)
+                    
+                    embed.add_field(
+                        name=f"{status_emoji} {status} ({len(status_tasks)})",
+                        value="\n\n".join(task_list),
+                        inline=False
+                    )
+
+            embed.set_footer(text=f"Showing all {len(tasks)} of your tasks")
+            await interaction.followup.send(embed=embed)
+
+        except Exception as e:
+            await interaction.followup.send(
+                "❌ Failed to retrieve your tasks. Please try again later.",
+                ephemeral=True
+            )
+            logger.error(f"Error listing user tasks: {e}")
+
     @update_task.autocomplete('status')
     async def update_status_autocomplete(
         self,
