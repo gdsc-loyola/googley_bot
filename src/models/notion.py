@@ -23,6 +23,7 @@ class TaskStatus(str, Enum):
     """Task status options."""
     
     NOT_STARTED = "Not started"
+    ON_HOLD = "On hold"
     IN_PROGRESS = "In progress"
     COMPLETED = "Completed"
     CANCELLED = "Cancelled"
@@ -36,6 +37,7 @@ class NotionTask(Base):
     # Task identification
     notion_page_id: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
     notion_database_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    notion_task_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, unique=True, index=True)
     
     # Task details
     title: Mapped[str] = mapped_column(String(500), nullable=False, index=True)

@@ -203,6 +203,233 @@ class NotionCommands(commands.Cog):
             )
             logger.error(f"Error creating Notion task: {e}")
 
+    @notion_group.command(
+        name="update", 
+        description="Update the status of an existing task"
+    )
+    @app_commands.describe(
+        task_id="Task ID from Notion URL",
+        status="New status: Not started, On hold, In progress, Cancelled, or Done"
+    )
+    async def update_task(
+        self,
+        interaction: discord.Interaction,
+        task_id: str,
+        status: str
+    ):
+        """Update the status of an existing task."""
+        await interaction.response.defer()
+
+        try:
+            # Clean the task_id
+            notion_task_id = task_id.strip()
+            
+            # Validate status
+            valid_statuses = {
+                "not started": TaskStatus.NOT_STARTED,
+                "on hold": TaskStatus.ON_HOLD,
+                "in progress": TaskStatus.IN_PROGRESS,
+                "cancelled": TaskStatus.CANCELLED,
+                "done": TaskStatus.COMPLETED
+            }
+            
+            status_lower = status.lower()
+            if status_lower not in valid_statuses:
+                await interaction.followup.send(
+                    "❌ Invalid status! Valid options: Not started, On hold, In progress, Cancelled, Done",
+                    ephemeral=True
+                )
+                return
+            
+            new_status = valid_statuses[status_lower]
+
+            # Get task from database - handle both formats (with/without dashes)
+            async with AsyncSessionLocal() as session:
+                from sqlalchemy import select
+                
+                # Try with the provided format first
+                result = await session.execute(
+                    select(NotionTask).where(NotionTask.notion_page_id == notion_task_id)
+                )
+                task = result.scalar_one_or_none()
+                
+                # If not found and no dashes provided, try adding dashes in UUID format
+                if not task and '-' not in notion_task_id and len(notion_task_id) == 32:
+                    # Convert 25b389c4434b8146bee3dde5835db2a5 to 25b389c4-434b-8146-bee3-dde5835db2a5
+                    formatted_id = f"{notion_task_id[:8]}-{notion_task_id[8:12]}-{notion_task_id[12:16]}-{notion_task_id[16:20]}-{notion_task_id[20:]}"
+                    result = await session.execute(
+                        select(NotionTask).where(NotionTask.notion_page_id == formatted_id)
+                    )
+                    task = result.scalar_one_or_none()
+                
+                # If still not found and dashes provided, try removing dashes
+                elif not task and '-' in notion_task_id:
+                    no_dash_id = notion_task_id.replace('-', '')
+                    result = await session.execute(
+                        select(NotionTask).where(NotionTask.notion_page_id == no_dash_id)
+                    )
+                    task = result.scalar_one_or_none()
+                
+                if not task:
+                    await interaction.followup.send(
+                        f"❌ Task with ID {notion_task_id} not found!\nMake sure you're using the correct Notion page ID.",
+                        ephemeral=True
+                    )
+                    return
+
+                old_status = task.status
+                
+                # Update local database
+                task.status = new_status
+                if new_status == TaskStatus.COMPLETED:
+                    task.completed_at = datetime.utcnow()
+                
+                await session.commit()
+                logger.info(f"Updated task {task.id} status from {old_status} to {new_status.value}")
+
+                # Try to update Notion (if possible)
+                try:
+                    notion_client = get_notion_client()
+                    
+                    # Get database schema to find status field
+                    db_info = notion_client.client.databases.retrieve(database_id=notion_client.tasks_database_id)
+                    properties = db_info.get("properties", {})
+                    
+                    status_field_name = None
+                    for prop_name, prop_info in properties.items():
+                        prop_type = prop_info.get("type", "unknown")
+                        
+                        if prop_type == "status":
+                            status_field_name = prop_name
+                            break
+                        elif prop_type == "select" and any(keyword in prop_name.lower() for keyword in ["status", "state", "progress"]):
+                            status_field_name = prop_name
+                            break
+                    
+                    if status_field_name:
+                        field_info = properties[status_field_name]
+                        field_type = field_info.get("type")
+                        
+                        if field_type == "status":
+                            properties_update = {
+                                status_field_name: {
+                                    "status": {
+                                        "name": new_status.value
+                                    }
+                                }
+                            }
+                        else:
+                            properties_update = {
+                                status_field_name: {
+                                    "select": {
+                                        "name": new_status.value
+                                    }
+                                }
+                            }
+                        
+                        notion_client.client.pages.update(
+                            page_id=task.notion_page_id,
+                            properties=properties_update
+                        )
+                    else:
+                        raise Exception("No status field found in Notion database")
+                    
+                    task.last_synced = datetime.utcnow()
+                    task.sync_status = "completed"
+                    await session.commit()
+                    logger.info(f"Successfully synced status update to Notion for task {task.id}")
+                    
+                except Exception as notion_error:
+                    logger.error(f"Failed to update Notion status: {notion_error}")
+                    logger.error(f"Notion page ID: {task.notion_page_id}")
+                    logger.error(f"New status: {new_status.value}")
+                    task.sync_status = "failed"
+                    task.error_message = str(notion_error)
+                    await session.commit()
+
+                # Create simple embed matching the desired format
+                embed = discord.Embed(
+                    title="📝 Edited a task!",
+                    description=f"**Updated!**\nCheck the Tasks database in Notion to edit more properties.",
+                    color=0xFF8C00  # Orange color to match the sidebar
+                )
+                
+                await interaction.followup.send(embed=embed)
+
+        except Exception as e:
+            await interaction.followup.send(
+                "❌ Failed to update task. Please try again later.",
+                ephemeral=True
+            )
+            logger.error(f"Error updating task: {e}")
+
+    @update_task.autocomplete('status')
+    async def update_status_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        """Autocomplete for status parameter - excludes current status."""
+        try:
+            task_id = interaction.namespace.task_id
+            if not task_id:
+                # If no task ID provided yet, show all options
+                all_statuses = ["Not started", "On hold", "In progress", "Cancelled", "Done"]
+                return [app_commands.Choice(name=status, value=status) for status in all_statuses]
+            
+            # Try to find the task to get current status
+            current_status = None
+            try:
+                async with AsyncSessionLocal() as session:
+                    from sqlalchemy import select
+                    
+                    # Handle both ID formats
+                    notion_task_id = task_id.strip()
+                    
+                    # Try with provided format first
+                    result = await session.execute(
+                        select(NotionTask).where(NotionTask.notion_page_id == notion_task_id)
+                    )
+                    task = result.scalar_one_or_none()
+                    
+                    # If not found and no dashes, try adding dashes
+                    if not task and '-' not in notion_task_id and len(notion_task_id) == 32:
+                        formatted_id = f"{notion_task_id[:8]}-{notion_task_id[8:12]}-{notion_task_id[12:16]}-{notion_task_id[16:20]}-{notion_task_id[20:]}"
+                        result = await session.execute(
+                            select(NotionTask).where(NotionTask.notion_page_id == formatted_id)
+                        )
+                        task = result.scalar_one_or_none()
+                    
+                    if task:
+                        current_status = task.status
+                        
+            except Exception:
+                pass  # Ignore errors, just show all options
+            
+            # All possible statuses
+            all_statuses = ["Not started", "On hold", "In progress", "Cancelled", "Done"]
+            
+            # Remove current status from options if found
+            if current_status:
+                available_statuses = [s for s in all_statuses if s != current_status]
+            else:
+                available_statuses = all_statuses
+            
+            # Filter based on current input
+            if current:
+                available_statuses = [s for s in available_statuses if current.lower() in s.lower()]
+            
+            return [app_commands.Choice(name=status, value=status) for status in available_statuses[:25]]  # Discord limit
+            
+        except Exception as e:
+            logger.error(f"Status autocomplete error: {e}")
+            # Fallback to basic options
+            return [
+                app_commands.Choice(name="Not started", value="Not started"),
+                app_commands.Choice(name="In progress", value="In progress"),
+                app_commands.Choice(name="Done", value="Done")
+            ]
+
     @create_task.autocomplete('priority')
     async def priority_autocomplete(
         self,
