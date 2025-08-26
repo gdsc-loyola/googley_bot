@@ -541,6 +541,54 @@ class NotionCommands(commands.Cog):
             if current.lower() in priority.lower()
         ]
 
+    @create_task.autocomplete('discord_user_id')
+    async def discord_user_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        """Autocomplete for discord_user_id parameter - search by username."""
+        try:
+            if not current or len(current) < 2:
+                return []
+            
+            # Search through guild members
+            guild = interaction.guild
+            if not guild:
+                return []
+            
+            matches = []
+            current_lower = current.lower()
+            
+            # Search by display name and username
+            for member in guild.members:
+                # Skip bots
+                if member.bot:
+                    continue
+                    
+                # Check display name
+                if current_lower in member.display_name.lower():
+                    matches.append(app_commands.Choice(
+                        name=f"{member.display_name} ({member.name})",
+                        value=str(member.id)
+                    ))
+                # Check username if different from display name
+                elif current_lower in member.name.lower() and member.name != member.display_name:
+                    matches.append(app_commands.Choice(
+                        name=f"{member.name} (username)",
+                        value=str(member.id)
+                    ))
+                
+                # Limit to 25 results (Discord limit)
+                if len(matches) >= 25:
+                    break
+            
+            return matches
+            
+        except Exception as e:
+            logger.error(f"Discord user autocomplete error: {e}")
+            return []
+
 
 async def setup(bot: commands.Bot):
     """Setup function to add the cog to the bot."""
