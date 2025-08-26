@@ -37,7 +37,6 @@ class GoogleyBot(commands.Bot):
             "src.commands.calendar",
             "src.commands.telegram",
             "src.commands.notion",
-            "src.commands.standup",
             "src.commands.utils",
             "src.bot.events",
         ]
