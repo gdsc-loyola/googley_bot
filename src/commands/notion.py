@@ -460,6 +460,118 @@ class NotionCommands(commands.Cog):
             )
             logger.error(f"Error listing user tasks: {e}")
 
+    @notion_group.command(
+        name="summary", 
+        description="List tasks with start dates in the current week"
+    )
+    async def weekly_summary(
+        self,
+        interaction: discord.Interaction
+    ):
+        """List tasks assigned to the user with start dates in the current week."""
+        await interaction.response.defer()
+
+        try:
+            user_id = str(interaction.user.id)
+            
+            # Get current week boundaries (Monday to Sunday)
+            from datetime import timedelta
+            now = datetime.utcnow()
+            
+            # Find Monday of current week
+            days_since_monday = now.weekday()
+            week_start = (now - timedelta(days=days_since_monday)).replace(hour=0, minute=0, second=0, microsecond=0)
+            week_end = week_start + timedelta(days=6, hours=23, minutes=59, seconds=59)
+            
+            # Get tasks from database with start dates in current week
+            async with AsyncSessionLocal() as session:
+                from sqlalchemy import select, and_
+                
+                result = await session.execute(
+                    select(NotionTask).where(
+                        and_(
+                            NotionTask.discord_user_id == user_id,
+                            NotionTask.start_date >= week_start,
+                            NotionTask.start_date <= week_end
+                        )
+                    ).order_by(
+                        NotionTask.start_date.asc()
+                    )
+                )
+                tasks = result.scalars().all()
+
+            if not tasks:
+                embed = discord.Embed(
+                    title="📅 No tasks this week",
+                    description=f"You don't have any tasks with start dates between {week_start.strftime('%b %d')} - {week_end.strftime('%b %d, %Y')}.",
+                    color=0x95a5a6
+                )
+                await interaction.followup.send(embed=embed)
+                return
+
+            # Group tasks by status
+            from collections import defaultdict
+            grouped_tasks = defaultdict(list)
+            
+            for task in tasks:
+                grouped_tasks[task.status].append(task)
+
+            # Status order for display
+            status_order = ["In progress", "Not started", "On hold", "Completed", "Cancelled"]
+            
+            # Status emojis
+            status_emojis = {
+                "Not started": "⚪",  # Grey/white
+                "On hold": "🟠",     # Orange
+                "In progress": "🔵", # Blue
+                "Completed": "🟢",   # Green
+                "Cancelled": "🔴"    # Red
+            }
+
+            # Create tasks summary embed
+            embed = discord.Embed(
+                title=f"📅 This week's tasks ({len(tasks)})",
+                description=f"Tasks starting between {week_start.strftime('%b %d')} - {week_end.strftime('%b %d, %Y')}",
+                color=0x3498db
+            )
+
+            # Add tasks grouped by status
+            for status in status_order:
+                if status in grouped_tasks and grouped_tasks[status]:
+                    status_tasks = grouped_tasks[status]
+                    status_emoji = status_emojis.get(status, "⚪")
+                    
+                    task_list = []
+                    for task in status_tasks:
+                        # Get priority
+                        priority = task.priority.value if hasattr(task.priority, 'value') else str(task.priority)
+                        
+                        # Task info with priority and start date
+                        start_date_str = task.start_date.strftime('%b %d') if task.start_date else "No date"
+                        task_info = f"**{task.title}**\n{priority} • Start: {start_date_str}"
+                        
+                        if task.description:
+                            desc_preview = task.description[:70] + "..." if len(task.description) > 70 else task.description
+                            task_info += f"\n*{desc_preview}*"
+                        
+                        task_list.append(task_info)
+                    
+                    embed.add_field(
+                        name=f"{status_emoji} {status} ({len(status_tasks)})",
+                        value="\n\n".join(task_list),
+                        inline=False
+                    )
+
+            embed.set_footer(text=f"Showing {len(tasks)} tasks for this week")
+            await interaction.followup.send(embed=embed)
+
+        except Exception as e:
+            await interaction.followup.send(
+                "❌ Failed to retrieve your weekly summary. Please try again later.",
+                ephemeral=True
+            )
+            logger.error(f"Error retrieving weekly summary: {e}")
+
     @update_task.autocomplete('status')
     async def update_status_autocomplete(
         self,
