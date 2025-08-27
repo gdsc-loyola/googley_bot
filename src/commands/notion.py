@@ -245,7 +245,7 @@ class NotionCommands(commands.Cog):
         description="Update the status of an existing task"
     )
     @app_commands.describe(
-        task_id="Task ID from Notion URL",
+        task_id="Search for tasks by typing part of the task title",
         status="New status: Not started, On hold, In progress, Cancelled, or Done"
     )
     async def update_task(
@@ -624,6 +624,61 @@ class NotionCommands(commands.Cog):
                 ephemeral=True
             )
             logger.error(f"Error retrieving weekly summary: {e}")
+
+    @update_task.autocomplete('task_id')
+    async def task_id_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        """Autocomplete for task_id parameter - searches task titles."""
+        try:
+            if not current or len(current) < 2:
+                return []
+            
+            # Search for tasks by title
+            async with AsyncSessionLocal() as session:
+                from sqlalchemy import select, or_
+                
+                result = await session.execute(
+                    select(NotionTask).where(
+                        or_(
+                            NotionTask.title.ilike(f"%{current}%"),
+                            NotionTask.notion_task_id.ilike(f"%{current}%") if current.replace('-', '').isalnum() else False
+                        )
+                    ).limit(25)  # Discord autocomplete limit
+                )
+                tasks = result.scalars().all()
+                
+                choices = []
+                for task in tasks:
+                    # Use notion_task_id if available, otherwise use notion_page_id
+                    task_id = task.notion_task_id or task.notion_page_id
+                    
+                    # Create display name with status indicator
+                    status_emoji = {
+                        "Not started": "⚪",
+                        "On hold": "⏸️", 
+                        "In progress": "🔄",
+                        "Done": "🟢",
+                        "Cancelled": "🔴"
+                    }.get(str(task.status), "❓")
+                    
+                    # Format: "Status Task Title (ID: first-8-chars)"
+                    display_name = f"{status_emoji} {task.title[:40]}{'...' if len(task.title) > 40 else ''} (ID: {task_id[:8]}...)"
+                    
+                    choices.append(
+                        app_commands.Choice(
+                            name=display_name,
+                            value=task_id
+                        )
+                    )
+                
+                return choices
+                
+        except Exception as e:
+            logger.error(f"Task ID autocomplete error: {e}")
+            return []
 
     @update_task.autocomplete('status')
     async def update_status_autocomplete(
