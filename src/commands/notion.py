@@ -1561,19 +1561,19 @@ class NotionCommands(commands.Cog):
     )
     @app_commands.describe(
         title="Title of the project (required)",
-        status="Status of the project (required)",
         start_date="Start date (required, e.g., 01-15-2024 or January 15, 2024)",
         end_date="End date (required, e.g., 03-15-2024 or March 15, 2024)",
-        description="Description of the project (optional)"
+        description="Description of the project (optional)",
+        status="Status of the project (optional, defaults to 'Not started')"
     )
     async def create_project(
         self,
         interaction: discord.Interaction,
         title: str,
-        status: str,
         start_date: str,
         end_date: str,
-        description: str = None
+        description: str = None,
+        status: str = "Not started"
     ):
         """Create a new project in Notion database."""
         await interaction.response.defer()
@@ -1586,13 +1586,6 @@ class NotionCommands(commands.Cog):
             if len(title.strip()) == 0:
                 await interaction.followup.send(
                     "❌ Title cannot be empty!", 
-                    ephemeral=True
-                )
-                return
-
-            if len(status.strip()) == 0:
-                await interaction.followup.send(
-                    "❌ Status cannot be empty!", 
                     ephemeral=True
                 )
                 return
