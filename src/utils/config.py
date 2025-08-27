@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     github_token: Optional[str] = None
     notion_token: Optional[str] = None
     notion_database_tasks: Optional[str] = None
-    notion_database_teams: Optional[str] = None
+    notion_database_team: Optional[str] = None
     notion_database_projects: Optional[str] = None
     notion_database_resources: Optional[str] = None
 

@@ -5,9 +5,10 @@ from typing import Any, Dict, List, Optional
 
 from notion_client import Client
 from loguru import logger
+from dateutil import parser as date_parser
 
 from src.utils.config import settings
-from src.models.notion import NotionTask, TaskPriority, TaskStatus
+from src.models.notion import NotionTask, TaskPriority, TaskStatus, NotionTeam, TeamStatus
 
 
 class NotionClient:
@@ -20,9 +21,12 @@ class NotionClient:
             
         self.client = Client(auth=settings.notion_token)
         self.tasks_database_id = settings.notion_database_tasks
+        self.teams_database_id = settings.notion_database_team
         
         if not self.tasks_database_id:
             logger.warning("NOTION_DATABASE_TASKS not configured")
+        if not self.teams_database_id:
+            logger.warning("NOTION_DATABASE_TEAMS not configured")
     
     async def create_task(
         self,
@@ -334,6 +338,112 @@ class NotionClient:
         except Exception as e:
             logger.error(f"Failed to extract page content: {e}")
             return {"error": str(e)}
+    
+    async def create_team_member(
+        self,
+        name: str,
+        position: str,
+        email: str,
+        phone_number: str,
+        birthday: str,
+        discord_user_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Create a new team member in Notion database.
+        
+        Args:
+            name: Team member name (required)
+            position: Team member position (required)
+            email: Team member email (required)
+            phone_number: Team member phone number (required)
+            birthday: Team member birthday (required)
+            discord_user_id: Discord user ID who created the record
+            
+        Returns:
+            Dict containing the created Notion page data
+            
+        Raises:
+            ValueError: If required fields are missing
+            Exception: If Notion API call fails
+        """
+        if not self.teams_database_id:
+            raise ValueError("Teams database ID not configured")
+            
+        if not all([name, position, email, phone_number, birthday]):
+            raise ValueError("All fields (name, position, email, phone_number, birthday) are required")
+        
+        # Parse birthday string to datetime
+        try:
+            birthday_date = date_parser.parse(birthday)
+        except (ValueError, TypeError) as e:
+            raise ValueError(f"Invalid birthday format: {birthday}. Please use a valid date format like 'MM-DD-YYYY' or 'January 15, 1990'")
+        
+        # Prepare properties for Notion database
+        properties = {
+            "Name": {
+                "title": [
+                    {
+                        "text": {
+                            "content": name
+                        }
+                    }
+                ]
+            }
+        }
+        
+        # Add required fields
+        properties["Position"] = {
+            "rich_text": [
+                {
+                    "text": {
+                        "content": position
+                    }
+                }
+            ]
+        }
+        
+        properties["Email"] = {
+            "rich_text": [
+                {
+                    "text": {
+                        "content": email
+                    }
+                }
+            ]
+        }
+        
+        properties["Phone Number"] = {
+            "phone_number": phone_number
+        }
+        
+        properties["Birthday"] = {
+            "date": {
+                "start": birthday_date.date().isoformat()
+            }
+        }
+        
+        # Add automatic Status field with default value
+        properties["Status"] = {
+            "select": {
+                "name": TeamStatus.ACTIVE.value
+            }
+        }
+        
+        try:
+            # Create page in Notion database
+            logger.debug(f"Creating Notion team member with properties: {properties}")
+            response = self.client.pages.create(
+                parent={"database_id": self.teams_database_id},
+                properties=properties
+            )
+            
+            logger.info(f"Created Notion team member: {name}")
+            return response
+            
+        except Exception as e:
+            logger.error(f"Failed to create Notion team member: {e}")
+            logger.error(f"Database ID: {self.teams_database_id}")
+            logger.error(f"Properties sent: {properties}")
+            raise
 
 
 # Global client instance

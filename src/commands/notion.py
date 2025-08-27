@@ -7,9 +7,10 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from loguru import logger
+from dateutil import parser as date_parser
 
 from src.integrations.notion.client import get_notion_client
-from src.models.notion import NotionTask, TaskPriority, TaskStatus
+from src.models.notion import NotionTask, TaskPriority, TaskStatus, NotionTeam, TeamStatus
 from src.utils.database import AsyncSessionLocal
 
 
@@ -30,13 +31,13 @@ class NotionCommands(commands.Cog):
         parent=notion_group
     )
     
+    team_group = app_commands.Group(
+        name="team",
+        description="Team management commands",
+        parent=notion_group
+    )
+    
     # Future database type groups can be added here:
-    # team_group = app_commands.Group(
-    #     name="team",
-    #     description="Team management commands",
-    #     parent=notion_group
-    # )
-    # 
     # project_group = app_commands.Group(
     #     name="project",
     #     description="Project management commands",
@@ -744,6 +745,224 @@ class NotionCommands(commands.Cog):
         except Exception as e:
             logger.error(f"Discord user autocomplete error: {e}")
             return []
+
+    @team_group.command(
+        name="create", 
+        description="Create a new team member in Notion"
+    )
+    @app_commands.describe(
+        name="Full name of the team member",
+        position="Job title or position", 
+        email="Email address",
+        phone_number="Phone number",
+        birthday="Birthday (e.g., 01-15-1990 or January 15, 1990)"
+    )
+    async def create_team_member(
+        self,
+        interaction: discord.Interaction,
+        name: str,
+        position: str,
+        email: str,
+        phone_number: str,
+        birthday: str
+    ):
+        """Create a new team member in Notion database."""
+        await interaction.response.defer()
+        
+        command_id = f"{interaction.user.id}_{interaction.id}_{name[:50]}"
+        logger.info(f"Processing team member creation command: {command_id}")
+
+        try:
+            # Validate all required inputs
+            if len(name.strip()) == 0:
+                await interaction.followup.send(
+                    "❌ Name cannot be empty!", 
+                    ephemeral=True
+                )
+                return
+
+            if len(position.strip()) == 0:
+                await interaction.followup.send(
+                    "❌ Position cannot be empty!", 
+                    ephemeral=True
+                )
+                return
+
+            if len(email.strip()) == 0:
+                await interaction.followup.send(
+                    "❌ Email cannot be empty!", 
+                    ephemeral=True
+                )
+                return
+
+            if len(phone_number.strip()) == 0:
+                await interaction.followup.send(
+                    "❌ Phone number cannot be empty!", 
+                    ephemeral=True
+                )
+                return
+
+            if len(birthday.strip()) == 0:
+                await interaction.followup.send(
+                    "❌ Birthday cannot be empty!", 
+                    ephemeral=True
+                )
+                return
+
+            # Validate birthday date format
+            try:
+                birthday_date = date_parser.parse(birthday.strip())
+            except (ValueError, TypeError):
+                await interaction.followup.send(
+                    "❌ Invalid birthday format! Please use formats like 'MM-DD-YYYY' or 'January 15, 1990'.",
+                    ephemeral=True
+                )
+                return
+
+            # Validate field lengths
+            if len(name) > 200:
+                await interaction.followup.send(
+                    "❌ Name is too long (max 200 characters)!", 
+                    ephemeral=True
+                )
+                return
+
+            if len(position) > 200:
+                await interaction.followup.send(
+                    "❌ Position is too long (max 200 characters)!", 
+                    ephemeral=True
+                )
+                return
+
+            if len(email) > 200:
+                await interaction.followup.send(
+                    "❌ Email is too long (max 200 characters)!", 
+                    ephemeral=True
+                )
+                return
+
+            # Validate email format
+            if '@' not in email or '.' not in email:
+                await interaction.followup.send(
+                    "❌ Please provide a valid email address!",
+                    ephemeral=True
+                )
+                return
+
+            # Check for recent duplicate team members (within last 60 seconds)
+            async with AsyncSessionLocal() as session:
+                from sqlalchemy import select, func
+                from datetime import timedelta
+                
+                recent_cutoff = datetime.utcnow() - timedelta(seconds=60)
+                
+                duplicate_check = await session.execute(
+                    select(NotionTeam).where(
+                        NotionTeam.name == name.strip(),
+                        NotionTeam.created_at > recent_cutoff
+                    )
+                )
+                
+                existing_member = duplicate_check.scalar_one_or_none()
+                
+                if existing_member:
+                    logger.warning(f"Duplicate team member detected for command {command_id}, skipping creation")
+                    await interaction.followup.send(
+                        f"⚠️ A team member with the same name was just created! Member ID: {existing_member.id}",
+                        ephemeral=True
+                    )
+                    return
+
+            # Get Notion client
+            notion_client = get_notion_client()
+            
+            # Create team member in Notion
+            logger.info(f"Creating Notion team member: '{name.strip()}'")
+            notion_response = await notion_client.create_team_member(
+                name=name.strip(),
+                position=position.strip(),
+                email=email.strip(),
+                phone_number=phone_number.strip(),
+                birthday=birthday.strip(),
+                discord_user_id=str(interaction.user.id)
+            )
+            logger.info(f"Notion team member created successfully with ID: {notion_response['id']}")
+
+            # Save to local database
+            async with AsyncSessionLocal() as session:
+                team_member = NotionTeam(
+                    notion_page_id=notion_response["id"],
+                    notion_database_id=notion_client.teams_database_id,
+                    name=name.strip(),
+                    position=position.strip(),
+                    email=email.strip(),
+                    phone_number=phone_number.strip(),
+                    birthday=birthday_date,  # Store as datetime object
+                    status=TeamStatus.ACTIVE,  # Default status
+                    discord_user_id=str(interaction.user.id),
+                    discord_message_id=str(interaction.message.id) if interaction.message else None,
+                    discord_channel_id=str(interaction.channel_id),
+                    notion_url=notion_response.get("url"),
+                    notion_properties=notion_response.get("properties", {}),
+                    last_synced=datetime.utcnow(),
+                    sync_status="completed"
+                )
+
+                session.add(team_member)
+                logger.info(f"Saving team member to local database: {name.strip()}")
+                await session.commit()
+                await session.refresh(team_member)
+                logger.info(f"Team member saved to database with ID: {team_member.id}")
+
+            # Create embed for response
+            embed = discord.Embed(
+                title="👥 New team member added!",
+                description=f"### {name.strip()}",
+                color=0x00D084  # Green color for team
+            )
+            
+            embed.add_field(
+                name="💼 Position",
+                value=position.strip(),
+                inline=False
+            )
+            
+            embed.add_field(
+                name="📊 Status",
+                value=TeamStatus.ACTIVE.value,
+                inline=False
+            )
+            
+            # Add contact info
+            contact_info = [
+                f"📧 {email.strip()}",
+                f"📞 {phone_number.strip()}",
+                f"🎂 {birthday_date.strftime('%B %d, %Y')}"
+            ]
+            
+            embed.add_field(
+                name="📞 Contact Information",
+                value="\n".join(contact_info),
+                inline=False
+            )
+
+            await interaction.followup.send(embed=embed)
+
+            logger.info(f"Team member created: {name} by {interaction.user.name}")
+
+        except ValueError as e:
+            await interaction.followup.send(
+                f"❌ Configuration error: {str(e)}\nPlease contact an administrator.",
+                ephemeral=True
+            )
+            logger.error(f"Notion configuration error: {e}")
+
+        except Exception as e:
+            await interaction.followup.send(
+                "❌ Failed to create team member. Please try again later.",
+                ephemeral=True
+            )
+            logger.error(f"Error creating Notion team member: {e}")
 
 
 async def setup(bot: commands.Bot):

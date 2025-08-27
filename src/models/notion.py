@@ -29,6 +29,15 @@ class TaskStatus(str, Enum):
     CANCELLED = "Cancelled"
 
 
+class TeamStatus(str, Enum):
+    """Team member status options."""
+    
+    ACTIVE = "Active"
+    INACTIVE = "Inactive"
+    ON_LEAVE = "On Leave"
+    ALUMNI = "Alumni"
+
+
 class NotionTask(Base):
     """Notion task record for tracking created tasks."""
 
@@ -181,3 +190,91 @@ class NotionDatabase(Base):
             self.last_error = error
         elif record_count is not None:
             self.total_records = record_count
+
+
+class NotionTeam(Base):
+    """Notion team member record for tracking team members."""
+
+    __tablename__ = "notion_team"
+
+    # Team member identification
+    notion_page_id: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    notion_database_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    
+    # Team member details
+    name: Mapped[str] = mapped_column(String(200), nullable=False, index=True)
+    position: Mapped[str] = mapped_column(String(200), nullable=False)
+    email: Mapped[str] = mapped_column(String(200), nullable=False)
+    phone_number: Mapped[str] = mapped_column(String(50), nullable=False)
+    birthday: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))  # Store as date
+    status: Mapped[TeamStatus] = mapped_column(String(50), default=TeamStatus.ACTIVE)
+    
+    # Discord integration
+    discord_user_id: Mapped[Optional[str]] = mapped_column(String(20), index=True)
+    discord_message_id: Mapped[Optional[str]] = mapped_column(String(20))
+    discord_channel_id: Mapped[Optional[str]] = mapped_column(String(20))
+    
+    # Notion metadata
+    notion_url: Mapped[Optional[str]] = mapped_column(String(500))
+    notion_properties: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
+    
+    # Sync tracking
+    last_synced: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    sync_status: Mapped[str] = mapped_column(String(50), default="pending")
+    error_message: Mapped[Optional[str]] = mapped_column(Text)
+
+    def __repr__(self) -> str:
+        return f"<NotionTeam(name={self.name}, position={self.position})>"
+
+    def to_notion_properties(self) -> Dict[str, Any]:
+        """Convert to Notion database properties format."""
+        properties = {
+            "Name": {
+                "title": [
+                    {
+                        "text": {
+                            "content": self.name
+                        }
+                    }
+                ]
+            }
+        }
+        
+        properties["Position"] = {
+            "rich_text": [
+                {
+                    "text": {
+                        "content": self.position
+                    }
+                }
+            ]
+        }
+            
+        properties["Email"] = {
+            "rich_text": [
+                {
+                    "text": {
+                        "content": self.email
+                    }
+                }
+            ]
+        }
+            
+        properties["Phone Number"] = {
+            "phone_number": self.phone_number
+        }
+            
+        if self.birthday:
+            properties["Birthday"] = {
+                "date": {
+                    "start": self.birthday.date().isoformat()
+                }
+            }
+        
+        properties["Status"] = {
+            "select": {
+                "name": self.status.value
+            }
+        }
+            
+        return properties
