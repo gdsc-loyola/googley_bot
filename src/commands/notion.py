@@ -1779,6 +1779,335 @@ class NotionCommands(commands.Cog):
                 if current.lower() in status.lower()
             ][:25]
 
+    @project_group.command(
+        name="update", 
+        description="Update the status of an existing project"
+    )
+    @app_commands.describe(
+        project_id="Search for projects by typing part of the project title",
+        status="New status: Not started, In progress, On hold, Done, or Cancelled",
+        start_date="New start date (optional, e.g., 01-15-2024 or January 15, 2024)",
+        end_date="New end date (optional, e.g., 03-15-2024 or March 15, 2024)"
+    )
+    async def update_project(
+        self,
+        interaction: discord.Interaction,
+        project_id: str,
+        status: str,
+        start_date: str = None,
+        end_date: str = None
+    ):
+        """Update the status of an existing project."""
+        await interaction.response.defer()
+
+        try:
+            # Clean the project_id
+            notion_project_id = project_id.strip()
+            
+            # Validate status
+            valid_statuses = {
+                "not started": ProjectStatus.NOT_STARTED,
+                "on hold": ProjectStatus.ON_HOLD,
+                "in progress": ProjectStatus.IN_PROGRESS,
+                "cancelled": ProjectStatus.CANCELLED,
+                "done": ProjectStatus.DONE
+            }
+            
+            status_lower = status.lower()
+            if status_lower not in valid_statuses:
+                await interaction.followup.send(
+                    "❌ Invalid status! Valid options: Not started, On hold, In progress, Cancelled, Done",
+                    ephemeral=True
+                )
+                return
+            
+            new_status = valid_statuses[status_lower]
+
+            # Parse and validate dates if provided
+            new_start_date = None
+            new_end_date = None
+            
+            if start_date:
+                try:
+                    parsed_start = date_parser.parse(start_date.strip())
+                    # Make timezone-aware if it's naive
+                    if parsed_start.tzinfo is None:
+                        from datetime import timezone
+                        new_start_date = parsed_start.replace(tzinfo=timezone.utc)
+                    else:
+                        new_start_date = parsed_start
+                except (ValueError, TypeError):
+                    await interaction.followup.send(
+                        "❌ Invalid start date format! Please use formats like 'MM-DD-YYYY' or 'January 15, 2024'.",
+                        ephemeral=True
+                    )
+                    return
+            
+            if end_date:
+                try:
+                    parsed_end = date_parser.parse(end_date.strip())
+                    # Make timezone-aware if it's naive
+                    if parsed_end.tzinfo is None:
+                        from datetime import timezone
+                        new_end_date = parsed_end.replace(tzinfo=timezone.utc)
+                    else:
+                        new_end_date = parsed_end
+                except (ValueError, TypeError):
+                    await interaction.followup.send(
+                        "❌ Invalid end date format! Please use formats like 'MM-DD-YYYY' or 'March 15, 2024'.",
+                        ephemeral=True
+                    )
+                    return
+
+            # Validate date range if both dates are provided or being updated
+            # We need to check against existing project dates if only one is being updated
+            if new_start_date and new_end_date:
+                if new_end_date < new_start_date:
+                    await interaction.followup.send(
+                        "❌ End date cannot be before start date!",
+                        ephemeral=True
+                    )
+                    return
+
+            # Find project in database
+            async with AsyncSessionLocal() as session:
+                from sqlalchemy import select
+                
+                result = await session.execute(
+                    select(NotionProject).where(
+                        NotionProject.notion_page_id == notion_project_id
+                    )
+                )
+                project = result.scalar_one_or_none()
+                
+                if not project:
+                    await interaction.followup.send(
+                        f"❌ Project with ID {notion_project_id} not found in local database!",
+                        ephemeral=True
+                    )
+                    return
+                
+                # Store old values for comparison and validation
+                old_status = project.status
+                old_start_date = project.start_date
+                old_end_date = project.end_date
+                
+                # Validate date range with existing dates if only one is being updated
+                effective_start_date = new_start_date if new_start_date else old_start_date
+                effective_end_date = new_end_date if new_end_date else old_end_date
+                
+                if effective_start_date and effective_end_date and effective_end_date < effective_start_date:
+                    await interaction.followup.send(
+                        "❌ End date cannot be before start date! (considering existing dates)",
+                        ephemeral=True
+                    )
+                    return
+                
+                # Update local database
+                project.status = new_status
+                if new_start_date:
+                    project.start_date = new_start_date
+                if new_end_date:
+                    project.end_date = new_end_date
+                project.last_synced = datetime.utcnow()
+                
+                await session.commit()
+                logger.info(f"Updated project {project.id} status from {old_status} to {new_status.value}")
+
+                # Try to update Notion (if possible)
+                try:
+                    notion_client = get_notion_client()
+                    
+                    # Get database schema to find status field
+                    db_info = notion_client.client.databases.retrieve(database_id=notion_client.projects_database_id)
+                    properties = db_info.get("properties", {})
+                    
+                    status_field_name = None
+                    for prop_name, prop_info in properties.items():
+                        prop_type = prop_info.get("type", "unknown")
+                        if prop_type == "status":
+                            status_field_name = prop_name
+                            break
+                    
+                    # Build update properties
+                    update_properties = {}
+                    
+                    # Add status update
+                    if status_field_name:
+                        update_properties[status_field_name] = {
+                            "status": {
+                                "name": new_status.value
+                            }
+                        }
+                    else:
+                        update_properties["Status"] = {
+                            "select": {
+                                "name": new_status.value
+                            }
+                        }
+                    
+                    # Add date updates if provided
+                    if new_start_date:
+                        update_properties["Start Date"] = {
+                            "date": {
+                                "start": new_start_date.isoformat()
+                            }
+                        }
+                    
+                    if new_end_date:
+                        update_properties["End Date"] = {
+                            "date": {
+                                "start": new_end_date.isoformat()
+                            }
+                        }
+                    
+                    # Update Notion with all properties
+                    notion_client.client.pages.update(
+                        page_id=project.notion_page_id,
+                        properties=update_properties
+                    )
+                    
+                    project.sync_status = "completed"
+                    await session.commit()
+                    logger.info(f"Successfully updated project status in Notion")
+
+                except Exception as notion_error:
+                    logger.error(f"Failed to update Notion status: {notion_error}")
+                    logger.error(f"Notion page ID: {project.notion_page_id}")
+                    logger.error(f"New status: {new_status.value}")
+                    project.sync_status = "failed"
+                    project.error_message = str(notion_error)
+                    await session.commit()
+
+                # Create simple embed matching the desired format
+                # Handle old_status which might be a string or enum
+                old_status_text = old_status.value if hasattr(old_status, 'value') else str(old_status)
+                
+                # Build description with all changes
+                changes = [f"**Status: {old_status_text} → {new_status.value}**"]
+                
+                if new_start_date:
+                    old_start_text = old_start_date.strftime('%B %d, %Y') if old_start_date else "Not set"
+                    changes.append(f"**Start Date: {old_start_text} → {new_start_date.strftime('%B %d, %Y')}**")
+                
+                if new_end_date:
+                    old_end_text = old_end_date.strftime('%B %d, %Y') if old_end_date else "Not set"
+                    changes.append(f"**End Date: {old_end_text} → {new_end_date.strftime('%B %d, %Y')}**")
+                
+                embed = discord.Embed(
+                    title="🚀 Project updated!",
+                    description="\n".join(changes) + "\n\nCheck the Projects database in Notion to edit more properties.",
+                    color=0x3498db  # Blue color for projects
+                )
+                
+                embed.add_field(
+                    name="📋 Project",
+                    value=project.title,
+                    inline=True
+                )
+                
+                embed.add_field(
+                    name="📊 Current Status",
+                    value=new_status.value,
+                    inline=True
+                )
+                
+                # Add current date range if dates were updated or exist
+                if new_start_date or new_end_date or project.start_date or project.end_date:
+                    current_start = new_start_date or project.start_date
+                    current_end = new_end_date or project.end_date
+                    
+                    if current_start and current_end:
+                        date_range = f"{current_start.strftime('%B %d, %Y')} → {current_end.strftime('%B %d, %Y')}"
+                        embed.add_field(
+                            name="📅 Duration",
+                            value=date_range,
+                            inline=False
+                        )
+
+                await interaction.followup.send(embed=embed)
+                logger.info(f"Project status updated: {project.title} from {old_status_text} to {new_status.value}")
+
+        except Exception as e:
+            await interaction.followup.send(
+                "❌ Failed to update project. Please try again later.",
+                ephemeral=True
+            )
+            logger.error(f"Error updating project: {e}")
+
+    @update_project.autocomplete('project_id')
+    async def project_id_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        """Autocomplete for project_id parameter - searches project titles."""
+        try:
+            if not current or len(current) < 2:
+                return []
+            
+            # Search for projects by title
+            async with AsyncSessionLocal() as session:
+                from sqlalchemy import select
+                
+                result = await session.execute(
+                    select(NotionProject).where(
+                        NotionProject.title.ilike(f"%{current}%")
+                    ).limit(25)  # Discord autocomplete limit
+                )
+                projects = result.scalars().all()
+                
+                choices = []
+                for project in projects:
+                    # Create display name with status indicator
+                    status_emoji = {
+                        "Not started": "⚪",
+                        "On hold": "⏸️", 
+                        "In progress": "🔄",
+                        "Done": "🟢",
+                        "Cancelled": "🔴"
+                    }.get(str(project.status), "❓")
+                    
+                    # Format: "Status Project Title (ID: first-8-chars)"
+                    display_name = f"{status_emoji} {project.title[:40]}{'...' if len(project.title) > 40 else ''} (ID: {project.notion_page_id[:8]}...)"
+                    
+                    choices.append(
+                        app_commands.Choice(
+                            name=display_name,
+                            value=project.notion_page_id
+                        )
+                    )
+                
+                return choices
+                
+        except Exception as e:
+            logger.error(f"Project ID autocomplete error: {e}")
+            return []
+
+    @update_project.autocomplete('status')
+    async def project_update_status_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        """Autocomplete for project status parameter."""
+        try:
+            statuses = [status.value for status in ProjectStatus]
+            return [
+                app_commands.Choice(name=status, value=status)
+                for status in statuses
+                if current.lower() in status.lower()
+            ][:25]  # Discord limit
+        except Exception as e:
+            logger.error(f"Project status autocomplete error: {e}")
+            # Return basic statuses as fallback
+            basic_statuses = ["Not started", "In progress", "On hold", "Done", "Cancelled"]
+            return [
+                app_commands.Choice(name=status, value=status)
+                for status in basic_statuses
+                if current.lower() in status.lower()
+            ][:25]
+
 
 async def setup(bot: commands.Bot):
     """Setup function to add the cog to the bot."""
