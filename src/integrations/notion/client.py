@@ -8,7 +8,7 @@ from loguru import logger
 from dateutil import parser as date_parser
 
 from src.utils.config import settings
-from src.models.notion import NotionTask, TaskPriority, TaskStatus, NotionTeam, TeamStatus
+from src.models.notion import NotionTask, TaskPriority, TaskStatus, NotionTeam, TeamStatus, NotionResource
 
 
 class NotionClient:
@@ -22,11 +22,14 @@ class NotionClient:
         self.client = Client(auth=settings.notion_token)
         self.tasks_database_id = settings.notion_database_tasks
         self.teams_database_id = settings.notion_database_team
+        self.resources_database_id = settings.notion_database_resources
         
         if not self.tasks_database_id:
             logger.warning("NOTION_DATABASE_TASKS not configured")
         if not self.teams_database_id:
             logger.warning("NOTION_DATABASE_TEAMS not configured")
+        if not self.resources_database_id:
+            logger.warning("NOTION_DATABASE_RESOURCES not configured")
     
     async def create_task(
         self,
@@ -553,6 +556,141 @@ class NotionClient:
             logger.error(f"Failed to update Notion team member: {e}")
             logger.error(f"Page ID: {page_id}")
             logger.error(f"Properties sent: {properties}")
+            raise
+    
+    async def create_resource(
+        self,
+        title: str,
+        url: str,
+        description: Optional[str] = None,
+        discord_user_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Create a new resource in Notion database.
+        
+        Args:
+            title: Resource title (required)
+            url: Resource URL (required)
+            description: Resource description (optional)
+            discord_user_id: Discord user ID who created the record
+            
+        Returns:
+            Dict containing the created Notion page data
+            
+        Raises:
+            ValueError: If required fields are missing
+            Exception: If Notion API call fails
+        """
+        if not self.resources_database_id:
+            raise ValueError("Resources database ID not configured")
+            
+        if not title or not url:
+            raise ValueError("Title and URL are required")
+        
+        # Validate URL format
+        if not url.startswith(('http://', 'https://')):
+            raise ValueError("URL must start with http:// or https://")
+        
+        # First check database schema to find the correct URL property name
+        try:
+            db_info = self.client.databases.retrieve(database_id=self.resources_database_id)
+            db_properties = db_info.get("properties", {})
+            
+            # Look for URL property with different possible names
+            url_property_name = None
+            for prop_name, prop_info in db_properties.items():
+                prop_type = prop_info.get("type", "")
+                if prop_type == "url" or prop_name.lower() in ["url", "link", "web url", "website"]:
+                    url_property_name = prop_name
+                    logger.info(f"Found URL property: '{prop_name}' with type '{prop_type}'")
+                    break
+            
+            if not url_property_name:
+                # Log all available properties for debugging
+                logger.error("No URL property found. Available properties:")
+                for prop_name, prop_info in db_properties.items():
+                    prop_type = prop_info.get("type", "unknown")
+                    logger.error(f"  - '{prop_name}' ({prop_type})")
+                raise ValueError("No URL property found in the Notion database. Please add a URL property to your Resources database.")
+                
+        except Exception as schema_error:
+            logger.error(f"Failed to retrieve database schema: {schema_error}")
+            # Fallback to using "URL" as property name
+            url_property_name = "URL"
+        
+        # Prepare properties for Notion database
+        properties = {
+            "Title": {
+                "title": [
+                    {
+                        "text": {
+                            "content": title
+                        }
+                    }
+                ]
+            },
+            url_property_name: {
+                "url": url
+            }
+        }
+        
+        # Add description if provided
+        if description:
+            properties["Description"] = {
+                "rich_text": [
+                    {
+                        "text": {
+                            "content": description
+                        }
+                    }
+                ]
+            }
+        
+        try:
+            # Create page in Notion database
+            logger.debug(f"Creating Notion resource with properties: {properties}")
+            response = self.client.pages.create(
+                parent={"database_id": self.resources_database_id},
+                properties=properties
+            )
+            
+            logger.info(f"Created Notion resource: {title}")
+            return response
+            
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"Failed to create Notion resource: {e}")
+            logger.error(f"Database ID: {self.resources_database_id}")
+            logger.error(f"Properties sent: {properties}")
+            
+            # If it's a URL property error, try different approaches
+            if "URL is not a property" in error_msg or "not a property that exists" in error_msg:
+                logger.error("Trying alternative URL property approaches...")
+                
+                # Try each possible URL property name
+                for alternative_name in ["url", "Link", "link", "Web URL", "Website"]:
+                    try:
+                        logger.info(f"Trying URL property name: '{alternative_name}'")
+                        alt_properties = properties.copy()
+                        # Replace the URL property with alternative name
+                        if url_property_name in alt_properties:
+                            url_value = alt_properties[url_property_name]["url"]
+                            del alt_properties[url_property_name]
+                            alt_properties[alternative_name] = {"url": url_value}
+                        
+                        response = self.client.pages.create(
+                            parent={"database_id": self.resources_database_id},
+                            properties=alt_properties
+                        )
+                        
+                        logger.info(f"Success with URL property name: '{alternative_name}'")
+                        return response
+                        
+                    except Exception as alt_error:
+                        logger.debug(f"Failed with '{alternative_name}': {alt_error}")
+                        continue
+                        
+                logger.error("All URL property name attempts failed")
+            
             raise
 
 

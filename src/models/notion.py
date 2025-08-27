@@ -276,3 +276,65 @@ class NotionTeam(Base):
         }
             
         return properties
+
+
+class NotionResource(Base):
+    """Notion resource record for tracking shared resources."""
+
+    __tablename__ = "notion_resources"
+
+    # Resource identification
+    notion_page_id: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    notion_database_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    
+    # Resource details
+    title: Mapped[str] = mapped_column(String(500), nullable=False, index=True)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    url: Mapped[str] = mapped_column(String(1000), nullable=False)
+    
+    # Discord integration
+    discord_user_id: Mapped[Optional[str]] = mapped_column(String(20), index=True)
+    discord_message_id: Mapped[Optional[str]] = mapped_column(String(20))
+    discord_channel_id: Mapped[Optional[str]] = mapped_column(String(20))
+    
+    # Notion metadata
+    notion_url: Mapped[Optional[str]] = mapped_column(String(500))
+    notion_properties: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
+    
+    # Sync tracking
+    last_synced: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    sync_status: Mapped[str] = mapped_column(String(50), default="pending")
+    error_message: Mapped[Optional[str]] = mapped_column(Text)
+
+    def __repr__(self) -> str:
+        return f"<NotionResource(title={self.title}, url={self.url})>"
+
+    def to_notion_properties(self) -> Dict[str, Any]:
+        """Convert to Notion database properties format."""
+        properties = {
+            "Title": {
+                "title": [
+                    {
+                        "text": {
+                            "content": self.title
+                        }
+                    }
+                ]
+            },
+            "URL": {
+                "url": self.url
+            }
+        }
+        
+        if self.description:
+            properties["Description"] = {
+                "rich_text": [
+                    {
+                        "text": {
+                            "content": self.description
+                        }
+                    }
+                ]
+            }
+            
+        return properties
