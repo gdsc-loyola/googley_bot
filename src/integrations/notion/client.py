@@ -634,6 +634,68 @@ class NotionClient:
             logger.error(f"Database ID: {self.resources_database_id}")
             logger.error(f"Properties sent: {properties}")
             raise
+    
+    async def search_resources(
+        self,
+        search_term: str,
+        limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """Search for resources in Notion database by title and description.
+        
+        Args:
+            search_term: Term to search for in title and description
+            limit: Maximum number of results to return
+            
+        Returns:
+            List of Notion page data matching the search
+            
+        Raises:
+            ValueError: If required fields are missing
+            Exception: If Notion API call fails
+        """
+        if not self.resources_database_id:
+            raise ValueError("Resources database ID not configured")
+            
+        if not search_term or not search_term.strip():
+            raise ValueError("Search term is required")
+        
+        try:
+            # Search in Notion database using filter
+            response = self.client.databases.query(
+                database_id=self.resources_database_id,
+                filter={
+                    "or": [
+                        {
+                            "property": "Title",
+                            "title": {
+                                "contains": search_term.strip()
+                            }
+                        },
+                        {
+                            "property": "Description", 
+                            "rich_text": {
+                                "contains": search_term.strip()
+                            }
+                        }
+                    ]
+                },
+                page_size=limit,
+                sorts=[
+                    {
+                        "timestamp": "created_time",
+                        "direction": "descending"
+                    }
+                ]
+            )
+            
+            logger.info(f"Found {len(response.get('results', []))} resources matching '{search_term}'")
+            return response.get("results", [])
+            
+        except Exception as e:
+            logger.error(f"Failed to search Notion resources: {e}")
+            logger.error(f"Database ID: {self.resources_database_id}")
+            logger.error(f"Search term: {search_term}")
+            raise
 
 
 # Global client instance

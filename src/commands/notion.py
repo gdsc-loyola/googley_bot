@@ -1385,6 +1385,136 @@ class NotionCommands(commands.Cog):
             )
             logger.error(f"Error creating Notion resource: {e}")
 
+    @resource_group.command(
+        name="search", 
+        description="Search for resources in Notion"
+    )
+    @app_commands.describe(
+        query="Search term to look for in resource titles and descriptions",
+        limit="Maximum number of results to show (default: 10)"
+    )
+    async def search_resources(
+        self,
+        interaction: discord.Interaction,
+        query: str,
+        limit: int = 10
+    ):
+        """Search for resources in Notion database."""
+        await interaction.response.defer()
+        
+        logger.info(f"Processing resource search command: query='{query}', limit={limit}")
+
+        try:
+            # Validate inputs
+            if len(query.strip()) == 0:
+                await interaction.followup.send(
+                    "❌ Search query cannot be empty!", 
+                    ephemeral=True
+                )
+                return
+
+            if limit < 1 or limit > 25:
+                await interaction.followup.send(
+                    "❌ Limit must be between 1 and 25!", 
+                    ephemeral=True
+                )
+                return
+
+            # Get Notion client and search
+            notion_client = get_notion_client()
+            
+            logger.info(f"Searching Notion resources for: '{query.strip()}'")
+            search_results = await notion_client.search_resources(
+                search_term=query.strip(),
+                limit=limit
+            )
+
+            if not search_results:
+                embed = discord.Embed(
+                    title="🔍 No resources found",
+                    description=f"No resources found matching '{query.strip()}'",
+                    color=0x95a5a6
+                )
+                await interaction.followup.send(embed=embed)
+                return
+
+            # Process search results
+            results_text = []
+            for i, result in enumerate(search_results, 1):
+                properties = result.get("properties", {})
+                
+                # Extract title
+                title_prop = properties.get("Title", {})
+                title = ""
+                if title_prop.get("title"):
+                    title = "".join([t.get("plain_text", "") for t in title_prop["title"]])
+                
+                # Extract URL
+                url_prop = properties.get("URL", {})
+                url = url_prop.get("url", "")
+                
+                # Extract description
+                desc_prop = properties.get("Description", {})
+                description = ""
+                if desc_prop.get("rich_text"):
+                    description = "".join([t.get("plain_text", "") for t in desc_prop["rich_text"]])
+                
+                # Format result - just the clickable link as requested
+                if title and url:
+                    result_line = f"{i}. [{title}]({url})"
+                    
+                    # Add description preview if available (truncated)
+                    if description:
+                        desc_preview = description[:100] + "..." if len(description) > 100 else description
+                        result_line += f"\n   *{desc_preview}*"
+                    
+                    results_text.append(result_line)
+
+            # Create embed with results
+            embed = discord.Embed(
+                title=f"🔍 Found {len(results_text)} resource(s)",
+                description=f"Search results for: **{query.strip()}**",
+                color=0x9B59B6  # Purple color for resources
+            )
+            
+            # Split results into chunks if too long for Discord embed
+            results_content = "\n\n".join(results_text)
+            
+            if len(results_content) > 4000:  # Discord embed description limit
+                # Split into multiple embeds or truncate
+                truncated_results = "\n\n".join(results_text[:5])  # Show first 5 results
+                embed.add_field(
+                    name=f"📚 Resources (showing first 5 of {len(results_text)})",
+                    value=truncated_results,
+                    inline=False
+                )
+                embed.set_footer(text="Some results were truncated. Try a more specific search term.")
+            else:
+                embed.add_field(
+                    name=f"📚 Resources",
+                    value=results_content,
+                    inline=False
+                )
+
+            embed.set_footer(text=f"Searched by {interaction.user.display_name}")
+            await interaction.followup.send(embed=embed)
+
+            logger.info(f"Resource search completed: found {len(search_results)} results for '{query}'")
+
+        except ValueError as e:
+            await interaction.followup.send(
+                f"❌ Configuration error: {str(e)}\nPlease contact an administrator.",
+                ephemeral=True
+            )
+            logger.error(f"Notion configuration error: {e}")
+
+        except Exception as e:
+            await interaction.followup.send(
+                "❌ Failed to search resources. Please try again later.",
+                ephemeral=True
+            )
+            logger.error(f"Error searching Notion resources: {e}")
+
 
 async def setup(bot: commands.Bot):
     """Setup function to add the cog to the bot."""
