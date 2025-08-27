@@ -590,33 +590,6 @@ class NotionClient:
         if not url.startswith(('http://', 'https://')):
             raise ValueError("URL must start with http:// or https://")
         
-        # First check database schema to find the correct URL property name
-        try:
-            db_info = self.client.databases.retrieve(database_id=self.resources_database_id)
-            db_properties = db_info.get("properties", {})
-            
-            # Look for URL property with different possible names
-            url_property_name = None
-            for prop_name, prop_info in db_properties.items():
-                prop_type = prop_info.get("type", "")
-                if prop_type == "url" or prop_name.lower() in ["url", "link", "web url", "website"]:
-                    url_property_name = prop_name
-                    logger.info(f"Found URL property: '{prop_name}' with type '{prop_type}'")
-                    break
-            
-            if not url_property_name:
-                # Log all available properties for debugging
-                logger.error("No URL property found. Available properties:")
-                for prop_name, prop_info in db_properties.items():
-                    prop_type = prop_info.get("type", "unknown")
-                    logger.error(f"  - '{prop_name}' ({prop_type})")
-                raise ValueError("No URL property found in the Notion database. Please add a URL property to your Resources database.")
-                
-        except Exception as schema_error:
-            logger.error(f"Failed to retrieve database schema: {schema_error}")
-            # Fallback to using "URL" as property name
-            url_property_name = "URL"
-        
         # Prepare properties for Notion database
         properties = {
             "Title": {
@@ -628,7 +601,7 @@ class NotionClient:
                     }
                 ]
             },
-            url_property_name: {
+            "URL": {
                 "url": url
             }
         }
@@ -657,40 +630,9 @@ class NotionClient:
             return response
             
         except Exception as e:
-            error_msg = str(e)
             logger.error(f"Failed to create Notion resource: {e}")
             logger.error(f"Database ID: {self.resources_database_id}")
             logger.error(f"Properties sent: {properties}")
-            
-            # If it's a URL property error, try different approaches
-            if "URL is not a property" in error_msg or "not a property that exists" in error_msg:
-                logger.error("Trying alternative URL property approaches...")
-                
-                # Try each possible URL property name
-                for alternative_name in ["url", "Link", "link", "Web URL", "Website"]:
-                    try:
-                        logger.info(f"Trying URL property name: '{alternative_name}'")
-                        alt_properties = properties.copy()
-                        # Replace the URL property with alternative name
-                        if url_property_name in alt_properties:
-                            url_value = alt_properties[url_property_name]["url"]
-                            del alt_properties[url_property_name]
-                            alt_properties[alternative_name] = {"url": url_value}
-                        
-                        response = self.client.pages.create(
-                            parent={"database_id": self.resources_database_id},
-                            properties=alt_properties
-                        )
-                        
-                        logger.info(f"Success with URL property name: '{alternative_name}'")
-                        return response
-                        
-                    except Exception as alt_error:
-                        logger.debug(f"Failed with '{alternative_name}': {alt_error}")
-                        continue
-                        
-                logger.error("All URL property name attempts failed")
-            
             raise
 
 

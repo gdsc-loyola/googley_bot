@@ -10,7 +10,7 @@ from loguru import logger
 from dateutil import parser as date_parser
 
 from src.integrations.notion.client import get_notion_client
-from src.models.notion import NotionTask, TaskPriority, TaskStatus, NotionTeam, TeamStatus
+from src.models.notion import NotionTask, TaskPriority, TaskStatus, NotionTeam, TeamStatus, NotionResource
 from src.utils.database import AsyncSessionLocal
 
 
@@ -34,6 +34,12 @@ class NotionCommands(commands.Cog):
     team_group = app_commands.Group(
         name="team",
         description="Team management commands",
+        parent=notion_group
+    )
+    
+    resource_group = app_commands.Group(
+        name="resource",
+        description="Resource management commands",
         parent=notion_group
     )
     
@@ -746,6 +752,7 @@ class NotionCommands(commands.Cog):
             logger.error(f"Discord user autocomplete error: {e}")
             return []
 
+
     @team_group.command(
         name="create", 
         description="Create a new team member in Notion"
@@ -963,6 +970,420 @@ class NotionCommands(commands.Cog):
                 ephemeral=True
             )
             logger.error(f"Error creating Notion team member: {e}")
+
+    @team_group.command(
+        name="update", 
+        description="Update an existing team member in Notion"
+    )
+    @app_commands.describe(
+        name="Name of the team member to update (required)",
+        status="New status for the team member (required)",
+        position="Updated job title or position (optional)", 
+        email="Updated email address (optional)",
+        phone_number="Updated phone number (optional)",
+        birthday="Updated birthday (optional, e.g., 01-15-1990)"
+    )
+    async def update_team_member(
+        self,
+        interaction: discord.Interaction,
+        name: str,
+        status: str,
+        position: str = None,
+        email: str = None,
+        phone_number: str = None,
+        birthday: str = None
+    ):
+        """Update an existing team member in Notion database."""
+        await interaction.response.defer()
+        
+        command_id = f"{interaction.user.id}_{interaction.id}_{name[:50]}"
+        logger.info(f"Processing team member update command: {command_id}")
+
+        try:
+            # Validate required inputs
+            if len(name.strip()) == 0:
+                await interaction.followup.send(
+                    "❌ Name cannot be empty!", 
+                    ephemeral=True
+                )
+                return
+
+            if len(status.strip()) == 0:
+                await interaction.followup.send(
+                    "❌ Status cannot be empty!", 
+                    ephemeral=True
+                )
+                return
+
+            # Validate status
+            valid_statuses = {
+                "active": TeamStatus.ACTIVE,
+                "inactive": TeamStatus.INACTIVE
+            }
+            
+            status_lower = status.lower()
+            if status_lower not in valid_statuses:
+                await interaction.followup.send(
+                    "❌ Invalid status! Valid options: Active, Inactive",
+                    ephemeral=True
+                )
+                return
+            
+            new_status = valid_statuses[status_lower]
+
+            # Find team member by name
+            async with AsyncSessionLocal() as session:
+                from sqlalchemy import select
+                
+                result = await session.execute(
+                    select(NotionTeam).where(
+                        NotionTeam.name.ilike(f"%{name.strip()}%")  # Case insensitive search
+                    )
+                )
+                team_members = result.scalars().all()
+                
+                if not team_members:
+                    await interaction.followup.send(
+                        f"❌ No team member found with name '{name.strip()}'!",
+                        ephemeral=True
+                    )
+                    return
+                
+                if len(team_members) > 1:
+                    member_names = [member.name for member in team_members]
+                    await interaction.followup.send(
+                        f"❌ Multiple team members found with similar names: {', '.join(member_names)}\nPlease use the exact name.",
+                        ephemeral=True
+                    )
+                    return
+                
+                team_member = team_members[0]
+                # Convert string status to enum for comparison
+                if isinstance(team_member.status, str):
+                    try:
+                        old_status = TeamStatus(team_member.status)
+                    except ValueError:
+                        old_status = TeamStatus.ACTIVE  # Default fallback
+                else:
+                    old_status = team_member.status
+
+                # Validate optional fields if provided
+                if email and '@' not in email:
+                    await interaction.followup.send(
+                        "❌ Please provide a valid email address!",
+                        ephemeral=True
+                    )
+                    return
+
+                # Validate birthday format if provided
+                birthday_date = None
+                if birthday:
+                    try:
+                        birthday_date = date_parser.parse(birthday.strip())
+                    except (ValueError, TypeError):
+                        await interaction.followup.send(
+                            "❌ Invalid birthday format! Please use formats like 'MM-DD-YYYY' or 'January 15, 1990'.",
+                            ephemeral=True
+                        )
+                        return
+
+                # Get Notion client and update
+                notion_client = get_notion_client()
+                
+                # Update team member in Notion
+                logger.info(f"Updating Notion team member: '{team_member.name}' (ID: {team_member.notion_page_id})")
+                notion_response = await notion_client.update_team_member(
+                    page_id=team_member.notion_page_id,
+                    name=name.strip() if name else None,
+                    position=position.strip() if position else None,
+                    email=email.strip() if email else None,
+                    phone_number=phone_number.strip() if phone_number else None,
+                    birthday=birthday.strip() if birthday else None,
+                    status=new_status
+                )
+                logger.info(f"Notion team member updated successfully")
+
+                # Update local database
+                if name: team_member.name = name.strip()
+                if position: team_member.position = position.strip()
+                if email: team_member.email = email.strip()
+                if phone_number: team_member.phone_number = phone_number.strip()
+                if birthday_date: team_member.birthday = birthday_date
+                team_member.status = new_status
+                team_member.last_synced = datetime.utcnow()
+                team_member.sync_status = "completed"
+
+                await session.commit()
+                await session.refresh(team_member)
+                logger.info(f"Team member updated in local database: {team_member.name}")
+
+                # Create embed for response
+                embed = discord.Embed(
+                    title="👥 Team member updated!",
+                    description=f"### {team_member.name}",
+                    color=0x00D084  # Green color for team
+                )
+                
+                embed.add_field(
+                    name="📊 Status Change",
+                    value=f"{old_status.value if hasattr(old_status, 'value') else old_status} → {new_status.value}",
+                    inline=False
+                )
+                
+                if position:
+                    embed.add_field(
+                        name="💼 Position",
+                        value=position.strip(),
+                        inline=False
+                    )
+                
+                # Add updated contact info if provided
+                contact_updates = []
+                if email:
+                    contact_updates.append(f"📧 {email.strip()}")
+                if phone_number:
+                    contact_updates.append(f"📞 {phone_number.strip()}")
+                if birthday_date:
+                    contact_updates.append(f"🎂 {birthday_date.strftime('%B %d, %Y')}")
+                
+                if contact_updates:
+                    embed.add_field(
+                        name="📝 Updated Contact Info",
+                        value="\n".join(contact_updates),
+                        inline=False
+                    )
+
+                await interaction.followup.send(embed=embed)
+                logger.info(f"Team member updated: {team_member.name} by {interaction.user.name}")
+
+        except ValueError as e:
+            await interaction.followup.send(
+                f"❌ Configuration error: {str(e)}\nPlease contact an administrator.",
+                ephemeral=True
+            )
+            logger.error(f"Notion configuration error: {e}")
+
+        except Exception as e:
+            await interaction.followup.send(
+                "❌ Failed to update team member. Please try again later.",
+                ephemeral=True
+            )
+            logger.error(f"Error updating Notion team member: {e}")
+
+    @update_team_member.autocomplete('status')
+    async def team_status_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        """Autocomplete for team member status."""
+        statuses = ["Active", "Inactive"]
+        return [
+            app_commands.Choice(name=status, value=status)
+            for status in statuses
+            if current.lower() in status.lower()
+        ][:25]  # Discord limit
+
+    @update_team_member.autocomplete('name')
+    async def team_name_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        """Autocomplete for team member names."""
+        try:
+            if not current or len(current) < 2:
+                return []
+            
+            # Search team members by name
+            async with AsyncSessionLocal() as session:
+                from sqlalchemy import select
+                
+                result = await session.execute(
+                    select(NotionTeam).where(
+                        NotionTeam.name.ilike(f"%{current}%")
+                    ).limit(25)
+                )
+                team_members = result.scalars().all()
+                
+                return [
+                    app_commands.Choice(name=member.name, value=member.name)
+                    for member in team_members
+                ]
+            
+        except Exception as e:
+            logger.error(f"Team name autocomplete error: {e}")
+            return []
+
+    @resource_group.command(
+        name="create", 
+        description="Create a new resource in Notion"
+    )
+    @app_commands.describe(
+        title="Title of the resource (required)",
+        url="URL of the resource (required, must start with http:// or https://)",
+        description="Description of the resource (optional)"
+    )
+    async def create_resource(
+        self,
+        interaction: discord.Interaction,
+        title: str,
+        url: str,
+        description: str = None
+    ):
+        """Create a new resource in Notion database."""
+        await interaction.response.defer()
+        
+        command_id = f"{interaction.user.id}_{interaction.id}_{title[:50]}"
+        logger.info(f"Processing resource creation command: {command_id}")
+
+        try:
+            # Validate required inputs
+            if len(title.strip()) == 0:
+                await interaction.followup.send(
+                    "❌ Title cannot be empty!", 
+                    ephemeral=True
+                )
+                return
+
+            if len(url.strip()) == 0:
+                await interaction.followup.send(
+                    "❌ URL cannot be empty!", 
+                    ephemeral=True
+                )
+                return
+
+            # Validate field lengths
+            if len(title) > 500:
+                await interaction.followup.send(
+                    "❌ Title is too long (max 500 characters)!", 
+                    ephemeral=True
+                )
+                return
+
+            if len(url) > 1000:
+                await interaction.followup.send(
+                    "❌ URL is too long (max 1000 characters)!", 
+                    ephemeral=True
+                )
+                return
+
+            # Validate URL format
+            if not url.strip().startswith(('http://', 'https://')):
+                await interaction.followup.send(
+                    "❌ URL must start with http:// or https://!",
+                    ephemeral=True
+                )
+                return
+
+            # Check for recent duplicate resources (within last 60 seconds)
+            async with AsyncSessionLocal() as session:
+                from sqlalchemy import select
+                from datetime import timedelta
+                
+                recent_cutoff = datetime.utcnow() - timedelta(seconds=60)
+                
+                duplicate_check = await session.execute(
+                    select(NotionResource).where(
+                        NotionResource.title == title.strip(),
+                        NotionResource.created_at > recent_cutoff
+                    )
+                )
+                
+                existing_resource = duplicate_check.scalar_one_or_none()
+                
+                if existing_resource:
+                    logger.warning(f"Duplicate resource detected for command {command_id}, skipping creation")
+                    await interaction.followup.send(
+                        f"⚠️ A resource with the same title was just created! Resource ID: {existing_resource.id}",
+                        ephemeral=True
+                    )
+                    return
+
+            # Get Notion client
+            notion_client = get_notion_client()
+            
+            # Create resource in Notion
+            logger.info(f"Creating Notion resource: '{title.strip()}'")
+            notion_response = await notion_client.create_resource(
+                title=title.strip(),
+                url=url.strip(),
+                description=description.strip() if description else None,
+                discord_user_id=str(interaction.user.id)
+            )
+            logger.info(f"Notion resource created successfully with ID: {notion_response['id']}")
+
+            # Save to local database
+            async with AsyncSessionLocal() as session:
+                resource = NotionResource(
+                    notion_page_id=notion_response["id"],
+                    notion_database_id=notion_client.resources_database_id,
+                    title=title.strip(),
+                    description=description.strip() if description else None,
+                    url=url.strip(),
+                    discord_user_id=str(interaction.user.id),
+                    discord_message_id=str(interaction.message.id) if interaction.message else None,
+                    discord_channel_id=str(interaction.channel_id),
+                    notion_url=notion_response.get("url"),
+                    notion_properties=notion_response.get("properties", {}),
+                    last_synced=datetime.utcnow(),
+                    sync_status="completed"
+                )
+
+                session.add(resource)
+                logger.info(f"Saving resource to local database: {title.strip()}")
+                await session.commit()
+                await session.refresh(resource)
+                logger.info(f"Resource saved to database with ID: {resource.id}")
+
+            # Create embed for response
+            embed = discord.Embed(
+                title="📚 New resource created!",
+                description=f"### {title.strip()}",
+                color=0x9B59B6  # Purple color for resources
+            )
+            
+            embed.add_field(
+                name="🔗 URL",
+                value=f"[{url.strip()}]({url.strip()})",
+                inline=False
+            )
+            
+            if description:
+                # Truncate description if too long for embed
+                desc_display = description.strip()
+                if len(desc_display) > 300:
+                    desc_display = desc_display[:300] + "..."
+                    
+                embed.add_field(
+                    name="📝 Description",
+                    value=desc_display,
+                    inline=False
+                )
+
+            embed.add_field(
+                name="👤 Added by",
+                value=f"{interaction.user.display_name}",
+                inline=True
+            )
+
+            await interaction.followup.send(embed=embed)
+
+            logger.info(f"Resource created: {title} by {interaction.user.name}")
+
+        except ValueError as e:
+            await interaction.followup.send(
+                f"❌ Configuration error: {str(e)}\nPlease contact an administrator.",
+                ephemeral=True
+            )
+            logger.error(f"Notion configuration error: {e}")
+
+        except Exception as e:
+            await interaction.followup.send(
+                "❌ Failed to create resource. Please try again later.",
+                ephemeral=True
+            )
+            logger.error(f"Error creating Notion resource: {e}")
 
 
 async def setup(bot: commands.Bot):
