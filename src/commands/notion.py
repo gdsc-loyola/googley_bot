@@ -2108,6 +2108,224 @@ class NotionCommands(commands.Cog):
                 if current.lower() in status.lower()
             ][:25]
 
+    @resource_group.command(
+        name="update", 
+        description="Update an existing resource in Notion"
+    )
+    @app_commands.describe(
+        resource_id="Search for resources by typing part of the resource title",
+        url="New URL for the resource (required)",
+        description="New description for the resource (optional)"
+    )
+    async def update_resource(
+        self,
+        interaction: discord.Interaction,
+        resource_id: str,
+        url: str,
+        description: str = None
+    ):
+        """Update an existing resource in Notion database."""
+        await interaction.response.defer()
+
+        try:
+            # Clean the resource_id
+            notion_resource_id = resource_id.strip()
+            
+            # Validate URL
+            if len(url.strip()) == 0:
+                await interaction.followup.send(
+                    "❌ URL cannot be empty!",
+                    ephemeral=True
+                )
+                return
+
+            if len(url.strip()) > 1000:
+                await interaction.followup.send(
+                    "❌ URL is too long (max 1000 characters)!",
+                    ephemeral=True
+                )
+                return
+
+            # Validate URL format
+            if not url.strip().startswith(('http://', 'https://')):
+                await interaction.followup.send(
+                    "❌ URL must start with http:// or https://!",
+                    ephemeral=True
+                )
+                return
+
+            # Validate description if provided
+            if description is not None and len(description.strip()) == 0:
+                await interaction.followup.send(
+                    "❌ Description cannot be empty! Either provide a description or leave it blank.",
+                    ephemeral=True
+                )
+                return
+
+            # Find resource in database
+            async with AsyncSessionLocal() as session:
+                from sqlalchemy import select
+                
+                result = await session.execute(
+                    select(NotionResource).where(
+                        NotionResource.notion_page_id == notion_resource_id
+                    )
+                )
+                resource = result.scalar_one_or_none()
+                
+                if not resource:
+                    await interaction.followup.send(
+                        f"❌ Resource with ID {notion_resource_id} not found in local database!",
+                        ephemeral=True
+                    )
+                    return
+                
+                # Store old values for comparison
+                old_url = resource.url
+                old_description = resource.description
+                
+                # Update local database
+                resource.url = url.strip()
+                if description is not None:
+                    resource.description = description.strip() if description else None
+                resource.last_synced = datetime.utcnow()
+                
+                await session.commit()
+                logger.info(f"Updated resource {resource.id}: {resource.title}")
+
+                # Try to update Notion
+                try:
+                    notion_client = get_notion_client()
+                    
+                    # Build update properties
+                    update_properties = {
+                        "URL": {
+                            "url": url.strip()
+                        }
+                    }
+                    
+                    # Add description update if provided
+                    if description is not None:
+                        if description.strip():
+                            update_properties["Description"] = {
+                                "rich_text": [
+                                    {
+                                        "text": {
+                                            "content": description.strip()
+                                        }
+                                    }
+                                ]
+                            }
+                        else:
+                            # Clear description by setting empty rich_text
+                            update_properties["Description"] = {
+                                "rich_text": []
+                            }
+                    
+                    # Update Notion with all properties
+                    notion_client.client.pages.update(
+                        page_id=resource.notion_page_id,
+                        properties=update_properties
+                    )
+                    
+                    resource.sync_status = "completed"
+                    await session.commit()
+                    logger.info(f"Successfully updated resource in Notion")
+
+                except Exception as notion_error:
+                    logger.error(f"Failed to update Notion resource: {notion_error}")
+                    logger.error(f"Notion page ID: {resource.notion_page_id}")
+                    resource.sync_status = "failed"
+                    resource.error_message = str(notion_error)
+                    await session.commit()
+
+                # Create embed showing changes
+                changes = []
+                
+                if old_url != url.strip():
+                    changes.append(f"**URL Updated**")
+                
+                if description is not None and old_description != (description.strip() if description else None):
+                    if description and description.strip():
+                        changes.append(f"**Description Updated**")
+                    elif not description or not description.strip():
+                        changes.append(f"**Description Cleared**")
+                
+                # Build description text
+                description_text = f"**{resource.title}**\n\n[Click here to visit resource]({url.strip()})"
+                
+                embed = discord.Embed(
+                    title="📚 Resource updated!",
+                    description=description_text,
+                    color=0x9B59B6  # Purple color for resources
+                )
+                
+                if changes:
+                    embed.add_field(
+                        name="📝 Changes Made",
+                        value="\n".join(changes),
+                        inline=False
+                    )
+                
+                if description and description.strip():
+                    # Show new description (truncated if long)
+                    desc_preview = description.strip()[:200] + "..." if len(description.strip()) > 200 else description.strip()
+                    embed.add_field(
+                        name="📄 Description",
+                        value=desc_preview,
+                        inline=False
+                    )
+
+                await interaction.followup.send(embed=embed)
+                logger.info(f"Resource updated: {resource.title}")
+
+        except Exception as e:
+            await interaction.followup.send(
+                "❌ Failed to update resource. Please try again later.",
+                ephemeral=True
+            )
+            logger.error(f"Error updating resource: {e}")
+
+    @update_resource.autocomplete('resource_id')
+    async def resource_id_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        """Autocomplete for resource_id parameter - searches resource titles."""
+        try:
+            if not current or len(current) < 2:
+                return []
+            
+            # Search for resources by title
+            async with AsyncSessionLocal() as session:
+                from sqlalchemy import select
+                
+                result = await session.execute(
+                    select(NotionResource).where(
+                        NotionResource.title.ilike(f"%{current}%")
+                    ).limit(25)  # Discord autocomplete limit
+                )
+                resources = result.scalars().all()
+                
+                choices = []
+                for resource in resources:
+                    # Format: "📚 Resource Title (ID: first-8-chars)"
+                    display_name = f"📚 {resource.title[:40]}{'...' if len(resource.title) > 40 else ''} (ID: {resource.notion_page_id[:8]}...)"
+                    
+                    choices.append(
+                        app_commands.Choice(
+                            name=display_name,
+                            value=resource.notion_page_id
+                        )
+                    )
+                
+                return choices
+                
+        except Exception as e:
+            logger.error(f"Resource ID autocomplete error: {e}")
+            return []
+
 
 async def setup(bot: commands.Bot):
     """Setup function to add the cog to the bot."""
