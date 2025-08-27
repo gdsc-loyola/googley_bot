@@ -55,7 +55,7 @@ class NotionCommands(commands.Cog):
     )
     @app_commands.describe(
         task_name="The name/title of the task",
-        description="Detailed description of the task",
+        description="Detailed description of the task (optional)",
         discord_user_id="Discord user ID (mention someone or use their ID)",
         priority="Task priority level"
     )
@@ -63,9 +63,9 @@ class NotionCommands(commands.Cog):
         self,
         interaction: discord.Interaction,
         task_name: str,
-        description: str,
         discord_user_id: str,
-        priority: str = "Medium"
+        priority: str = "Medium",
+        description: str = None
     ):
         """Create a new task in Notion database."""
         await interaction.response.defer()
@@ -90,9 +90,10 @@ class NotionCommands(commands.Cog):
                 )
                 return
 
-            if len(description.strip()) == 0:
+            # Validate description if provided
+            if description is not None and len(description.strip()) == 0:
                 await interaction.followup.send(
-                    "❌ Description cannot be empty!", 
+                    "❌ Description cannot be empty! Either provide a description or leave it blank.", 
                     ephemeral=True
                 )
                 return
@@ -165,7 +166,7 @@ class NotionCommands(commands.Cog):
             logger.info(f"Creating Notion task: '{task_name.strip()}' for user {target_discord_id}")
             notion_response = await notion_client.create_task(
                 title=task_name.strip(),
-                description=description.strip(),
+                description=description.strip() if description else None,
                 discord_user_id=target_discord_id,
                 priority=task_priority,
                 start_date=datetime.utcnow()
@@ -178,7 +179,7 @@ class NotionCommands(commands.Cog):
                     notion_page_id=notion_response["id"],
                     notion_database_id=notion_client.tasks_database_id,
                     title=task_name.strip(),
-                    description=description.strip(),
+                    description=description.strip() if description else None,
                     priority=task_priority,
                     status=TaskStatus.NOT_STARTED,
                     discord_user_id=target_discord_id,
@@ -198,9 +199,13 @@ class NotionCommands(commands.Cog):
                 logger.info(f"Task saved to database with ID: {task.id}")
 
             # Create simple embed matching the desired format
+            description_text = f"### {task_name.strip()}"
+            if description:
+                description_text += f"\n{description.strip()}"
+            
             embed = discord.Embed(
                 title="📝 New task created!",
-                description=f"### {task_name.strip()}\n{description.strip()}",
+                description=description_text,
                 color=0xFF8C00  # Orange color to match the sidebar
             )
             
