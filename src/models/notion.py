@@ -34,8 +34,6 @@ class TeamStatus(str, Enum):
     
     ACTIVE = "Active"
     INACTIVE = "Inactive"
-    ON_LEAVE = "On Leave"
-    ALUMNI = "Alumni"
 
 
 class NotionTask(Base):

@@ -444,6 +444,116 @@ class NotionClient:
             logger.error(f"Database ID: {self.teams_database_id}")
             logger.error(f"Properties sent: {properties}")
             raise
+    
+    async def update_team_member(
+        self,
+        page_id: str,
+        name: Optional[str] = None,
+        position: Optional[str] = None,
+        email: Optional[str] = None,
+        phone_number: Optional[str] = None,
+        birthday: Optional[str] = None,
+        status: Optional[TeamStatus] = None
+    ) -> Dict[str, Any]:
+        """Update an existing team member in Notion database.
+        
+        Args:
+            page_id: Notion page ID of the team member
+            name: Updated name (optional)
+            position: Updated position (optional)
+            email: Updated email (optional)
+            phone_number: Updated phone number (optional)
+            birthday: Updated birthday (optional)
+            status: Updated status (optional)
+            
+        Returns:
+            Dict containing the updated Notion page data
+            
+        Raises:
+            ValueError: If page_id is missing
+            Exception: If Notion API call fails
+        """
+        if not page_id:
+            raise ValueError("Page ID is required")
+        
+        # Build properties dict with only provided fields
+        properties = {}
+        
+        if name is not None:
+            properties["Name"] = {
+                "title": [
+                    {
+                        "text": {
+                            "content": name
+                        }
+                    }
+                ]
+            }
+        
+        if position is not None:
+            properties["Position"] = {
+                "rich_text": [
+                    {
+                        "text": {
+                            "content": position
+                        }
+                    }
+                ]
+            }
+        
+        if email is not None:
+            properties["Email"] = {
+                "rich_text": [
+                    {
+                        "text": {
+                            "content": email
+                        }
+                    }
+                ]
+            }
+        
+        if phone_number is not None:
+            properties["Phone Number"] = {
+                "phone_number": phone_number
+            }
+        
+        if birthday is not None:
+            try:
+                birthday_date = date_parser.parse(birthday)
+                properties["Birthday"] = {
+                    "date": {
+                        "start": birthday_date.date().isoformat()
+                    }
+                }
+            except (ValueError, TypeError) as e:
+                raise ValueError(f"Invalid birthday format: {birthday}. Please use a valid date format like 'MM-DD-YYYY' or 'January 15, 1990'")
+        
+        if status is not None:
+            properties["Status"] = {
+                "select": {
+                    "name": status.value
+                }
+            }
+        
+        if not properties:
+            raise ValueError("At least one field must be provided for update")
+        
+        try:
+            # Update page in Notion database
+            logger.debug(f"Updating Notion team member {page_id} with properties: {properties}")
+            response = self.client.pages.update(
+                page_id=page_id,
+                properties=properties
+            )
+            
+            logger.info(f"Updated Notion team member: {page_id}")
+            return response
+            
+        except Exception as e:
+            logger.error(f"Failed to update Notion team member: {e}")
+            logger.error(f"Page ID: {page_id}")
+            logger.error(f"Properties sent: {properties}")
+            raise
 
 
 # Global client instance
