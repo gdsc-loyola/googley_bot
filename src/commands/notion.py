@@ -23,8 +23,27 @@ class NotionCommands(commands.Cog):
         name="notion", 
         description="Notion integration commands"
     )
+    
+    task_group = app_commands.Group(
+        name="task",
+        description="Task management commands",
+        parent=notion_group
+    )
+    
+    # Future database type groups can be added here:
+    # team_group = app_commands.Group(
+    #     name="team",
+    #     description="Team management commands",
+    #     parent=notion_group
+    # )
+    # 
+    # project_group = app_commands.Group(
+    #     name="project",
+    #     description="Project management commands",
+    #     parent=notion_group
+    # )
 
-    @notion_group.command(
+    @task_group.command(
         name="create", 
         description="Create a new task in Notion"
     )
@@ -174,13 +193,25 @@ class NotionCommands(commands.Cog):
 
             # Create simple embed matching the desired format
             embed = discord.Embed(
-                title="📝 New task made!",
+                title="📝 New task created!",
                 description=f"### {task_name.strip()}\n{description.strip()}",
                 color=0xFF8C00  # Orange color to match the sidebar
             )
+            
+            embed.add_field(
+                name="📋 Task ID",
+                value=f"`{task.notion_page_id}`",
+                inline=True
+            )
+            
+            embed.add_field(
+                name="⚡ Priority",
+                value=task_priority.value,
+                inline=True
+            )
 
             embed.add_field(
-                name="👤 Assigned to:",
+                name="👤 Assigned to",
                 value=f"<@{target_discord_id}>",
                 inline=False
             )
@@ -203,7 +234,7 @@ class NotionCommands(commands.Cog):
             )
             logger.error(f"Error creating Notion task: {e}")
 
-    @notion_group.command(
+    @task_group.command(
         name="update", 
         description="Update the status of an existing task"
     )
@@ -349,9 +380,21 @@ class NotionCommands(commands.Cog):
 
                 # Create simple embed matching the desired format
                 embed = discord.Embed(
-                    title="📝 Edited a task!",
-                    description=f"**Updated!**\nCheck the Tasks database in Notion to edit more properties.",
+                    title="📝 Task updated!",
+                    description=f"**Status changed from {old_status.value} to {new_status.value}**\nCheck the Tasks database in Notion to edit more properties.",
                     color=0xFF8C00  # Orange color to match the sidebar
+                )
+                
+                embed.add_field(
+                    name="📋 Task",
+                    value=task.title,
+                    inline=True
+                )
+                
+                embed.add_field(
+                    name="📊 New Status",
+                    value=new_status.value,
+                    inline=True
                 )
                 
                 await interaction.followup.send(embed=embed)
@@ -363,8 +406,8 @@ class NotionCommands(commands.Cog):
             )
             logger.error(f"Error updating task: {e}")
 
-    @notion_group.command(
-        name="tasks", 
+    @task_group.command(
+        name="list", 
         description="List tasks assigned to you"
     )
     async def list_user_tasks(
@@ -421,6 +464,7 @@ class NotionCommands(commands.Cog):
             # Create tasks list embed
             embed = discord.Embed(
                 title=f"📋 Your tasks ({len(tasks)})",
+                description="All tasks assigned to you across all projects",
                 color=0x3498db
             )
 
@@ -460,7 +504,7 @@ class NotionCommands(commands.Cog):
             )
             logger.error(f"Error listing user tasks: {e}")
 
-    @notion_group.command(
+    @task_group.command(
         name="summary", 
         description="List tasks with start dates in the current week"
     )
@@ -530,8 +574,8 @@ class NotionCommands(commands.Cog):
 
             # Create tasks summary embed
             embed = discord.Embed(
-                title=f"📅 This week's tasks ({len(tasks)})",
-                description=f"Tasks starting between {week_start.strftime('%b %d')} - {week_end.strftime('%b %d, %Y')}",
+                title=f"📅 This week's task summary ({len(tasks)})",
+                description=f"Tasks with start dates between {week_start.strftime('%b %d')} - {week_end.strftime('%b %d, %Y')}",
                 color=0x3498db
             )
 
