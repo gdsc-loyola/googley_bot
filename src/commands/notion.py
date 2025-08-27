@@ -1336,35 +1336,13 @@ class NotionCommands(commands.Cog):
                 await session.refresh(resource)
                 logger.info(f"Resource saved to database with ID: {resource.id}")
 
-            # Create embed for response
+            # Create simple embed response
+            description_text = f"**{title.strip()}**\n\n[Click here to visit resource]({url.strip()})"
+            
             embed = discord.Embed(
                 title="📚 New resource created!",
-                description=f"### {title.strip()}",
+                description=description_text,
                 color=0x9B59B6  # Purple color for resources
-            )
-            
-            embed.add_field(
-                name="🔗 URL",
-                value=f"[{url.strip()}]({url.strip()})",
-                inline=False
-            )
-            
-            if description:
-                # Truncate description if too long for embed
-                desc_display = description.strip()
-                if len(desc_display) > 300:
-                    desc_display = desc_display[:300] + "..."
-                    
-                embed.add_field(
-                    name="📝 Description",
-                    value=desc_display,
-                    inline=False
-                )
-
-            embed.add_field(
-                name="👤 Added by",
-                value=f"{interaction.user.display_name}",
-                inline=True
             )
 
             await interaction.followup.send(embed=embed)
