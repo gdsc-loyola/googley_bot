@@ -8,7 +8,7 @@ from loguru import logger
 from dateutil import parser as date_parser
 
 from src.utils.config import settings
-from src.models.notion import NotionTask, TaskPriority, TaskStatus, NotionTeam, TeamStatus, NotionResource
+from src.models.notion import NotionTask, TaskPriority, TaskStatus, NotionTeam, TeamStatus, NotionResource, NotionProject, ProjectStatus
 
 
 class NotionClient:
@@ -23,6 +23,7 @@ class NotionClient:
         self.tasks_database_id = settings.notion_database_tasks
         self.teams_database_id = settings.notion_database_team
         self.resources_database_id = settings.notion_database_resources
+        self.projects_database_id = settings.notion_database_projects
         
         if not self.tasks_database_id:
             logger.warning("NOTION_DATABASE_TASKS not configured")
@@ -30,6 +31,8 @@ class NotionClient:
             logger.warning("NOTION_DATABASE_TEAMS not configured")
         if not self.resources_database_id:
             logger.warning("NOTION_DATABASE_RESOURCES not configured")
+        if not self.projects_database_id:
+            logger.warning("NOTION_DATABASE_PROJECTS not configured")
     
     async def create_task(
         self,
@@ -695,6 +698,99 @@ class NotionClient:
             logger.error(f"Failed to search Notion resources: {e}")
             logger.error(f"Database ID: {self.resources_database_id}")
             logger.error(f"Search term: {search_term}")
+            raise
+
+    async def create_project(
+        self,
+        title: str,
+        status: str,
+        start_date: datetime,
+        end_date: datetime,
+        description: Optional[str] = None,
+        discord_user_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Create a new project in Notion database.
+        
+        Args:
+            title: Project title (required)
+            status: Project status (required)
+            start_date: Project start date (required)
+            end_date: Project end date (required)
+            description: Project description (optional)
+            discord_user_id: Discord user ID who created the record
+            
+        Returns:
+            Dict containing the created Notion page data
+            
+        Raises:
+            ValueError: If required fields are missing
+            Exception: If Notion API call fails
+        """
+        if not self.projects_database_id:
+            raise ValueError("Projects database ID not configured")
+            
+        if not title or not status or not start_date or not end_date:
+            raise ValueError("Title, status, start date, and end date are required")
+        
+        # Prepare properties for Notion database
+        properties = {
+            "Title": {
+                "title": [
+                    {
+                        "text": {
+                            "content": title
+                        }
+                    }
+                ]
+            },
+            "Status": {
+                "status": {
+                    "name": status
+                }
+            },
+            "Start Date": {
+                "date": {
+                    "start": start_date.isoformat()
+                }
+            },
+            "End Date": {
+                "date": {
+                    "start": end_date.isoformat()
+                }
+            }
+        }
+        
+        # Add description if provided
+        if description:
+            properties["Description"] = {
+                "rich_text": [
+                    {
+                        "text": {
+                            "content": description
+                        }
+                    }
+                ]
+            }
+        
+        try:
+            # First, let's inspect the database schema to see available properties
+            database_info = self.client.databases.retrieve(database_id=self.projects_database_id)
+            available_properties = list(database_info.get("properties", {}).keys())
+            logger.info(f"Available properties in projects database: {available_properties}")
+            
+            # Create the page in Notion
+            response = self.client.pages.create(
+                parent={"database_id": self.projects_database_id},
+                properties=properties
+            )
+            
+            logger.info(f"Successfully created project: {title}")
+            return response
+            
+        except Exception as e:
+            logger.error(f"Failed to create project in Notion: {e}")
+            logger.error(f"Database ID: {self.projects_database_id}")
+            logger.error(f"Properties: {properties}")
             raise
 
 

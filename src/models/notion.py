@@ -25,7 +25,7 @@ class TaskStatus(str, Enum):
     NOT_STARTED = "Not started"
     ON_HOLD = "On hold"
     IN_PROGRESS = "In progress"
-    COMPLETED = "Completed"
+    DONE = "Done"
     CANCELLED = "Cancelled"
 
 
@@ -34,6 +34,16 @@ class TeamStatus(str, Enum):
     
     ACTIVE = "Active"
     INACTIVE = "Inactive"
+
+
+class ProjectStatus(str, Enum):
+    """Project status options."""
+    
+    NOT_STARTED = "Not started"
+    IN_PROGRESS = "In progress"
+    ON_HOLD = "On hold"
+    DONE = "Done"
+    CANCELLED = "Cancelled"
 
 
 class NotionTask(Base):
@@ -77,11 +87,11 @@ class NotionTask(Base):
     @property
     def is_completed(self) -> bool:
         """Check if task is completed."""
-        return self.status == TaskStatus.COMPLETED
+        return self.status == TaskStatus.DONE
 
     def mark_completed(self) -> None:
         """Mark task as completed."""
-        self.status = TaskStatus.COMPLETED
+        self.status = TaskStatus.DONE
         self.completed_at = datetime.utcnow()
 
     def to_notion_properties(self) -> Dict[str, Any]:
@@ -323,6 +333,82 @@ class NotionResource(Base):
             },
             "URL": {
                 "url": self.url
+            }
+        }
+        
+        if self.description:
+            properties["Description"] = {
+                "rich_text": [
+                    {
+                        "text": {
+                            "content": self.description
+                        }
+                    }
+                ]
+            }
+            
+        return properties
+
+
+class NotionProject(Base):
+    """Notion project record for tracking projects."""
+
+    __tablename__ = "notion_projects"
+
+    # Project identification
+    notion_page_id: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    notion_database_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    
+    # Project details
+    title: Mapped[str] = mapped_column(String(500), nullable=False, index=True)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    status: Mapped[ProjectStatus] = mapped_column(String(50), default=ProjectStatus.NOT_STARTED)
+    start_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    end_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    
+    # Discord integration
+    discord_user_id: Mapped[Optional[str]] = mapped_column(String(20), index=True)
+    discord_message_id: Mapped[Optional[str]] = mapped_column(String(20))
+    discord_channel_id: Mapped[Optional[str]] = mapped_column(String(20))
+    
+    # Notion metadata
+    notion_url: Mapped[Optional[str]] = mapped_column(String(500))
+    notion_properties: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
+    
+    # Sync tracking
+    last_synced: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    sync_status: Mapped[str] = mapped_column(String(50), default="pending")
+    error_message: Mapped[Optional[str]] = mapped_column(Text)
+
+    def __repr__(self) -> str:
+        return f"<NotionProject(title={self.title}, status={self.status})>"
+
+    def to_notion_properties(self) -> Dict[str, Any]:
+        """Convert to Notion database properties format."""
+        properties = {
+            "Title": {
+                "title": [
+                    {
+                        "text": {
+                            "content": self.title
+                        }
+                    }
+                ]
+            },
+            "Status": {
+                "select": {
+                    "name": self.status.value
+                }
+            },
+            "Start Date": {
+                "date": {
+                    "start": self.start_date.isoformat()
+                }
+            },
+            "End Date": {
+                "date": {
+                    "start": self.end_date.isoformat()
+                }
             }
         }
         

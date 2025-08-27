@@ -10,7 +10,7 @@ from loguru import logger
 from dateutil import parser as date_parser
 
 from src.integrations.notion.client import get_notion_client
-from src.models.notion import NotionTask, TaskPriority, TaskStatus, NotionTeam, TeamStatus, NotionResource
+from src.models.notion import NotionTask, TaskPriority, TaskStatus, NotionTeam, TeamStatus, NotionResource, NotionProject, ProjectStatus
 from src.utils.database import AsyncSessionLocal
 
 
@@ -43,12 +43,11 @@ class NotionCommands(commands.Cog):
         parent=notion_group
     )
     
-    # Future database type groups can be added here:
-    # project_group = app_commands.Group(
-    #     name="project",
-    #     description="Project management commands",
-    #     parent=notion_group
-    # )
+    project_group = app_commands.Group(
+        name="project",
+        description="Project management commands",
+        parent=notion_group
+    )
 
     @task_group.command(
         name="create", 
@@ -268,7 +267,7 @@ class NotionCommands(commands.Cog):
                 "on hold": TaskStatus.ON_HOLD,
                 "in progress": TaskStatus.IN_PROGRESS,
                 "cancelled": TaskStatus.CANCELLED,
-                "done": TaskStatus.COMPLETED
+                "done": TaskStatus.DONE
             }
             
             status_lower = status.lower()
@@ -319,7 +318,7 @@ class NotionCommands(commands.Cog):
                 
                 # Update local database
                 task.status = new_status
-                if new_status == TaskStatus.COMPLETED:
+                if new_status == TaskStatus.DONE:
                     task.completed_at = datetime.utcnow()
                 
                 await session.commit()
@@ -386,9 +385,12 @@ class NotionCommands(commands.Cog):
                     await session.commit()
 
                 # Create simple embed matching the desired format
+                # Handle old_status which might be a string or enum
+                old_status_text = old_status.value if hasattr(old_status, 'value') else str(old_status)
+                
                 embed = discord.Embed(
                     title="📝 Task updated!",
-                    description=f"**Status changed from {old_status.value} to {new_status.value}**\nCheck the Tasks database in Notion to edit more properties.",
+                    description=f"**Status changed from {old_status_text} to {new_status.value}**\nCheck the Tasks database in Notion to edit more properties.",
                     color=0xFF8C00  # Orange color to match the sidebar
                 )
                 
@@ -457,14 +459,14 @@ class NotionCommands(commands.Cog):
                 grouped_tasks[task.status].append(task)
 
             # Status order for display
-            status_order = ["In progress", "Not started", "On hold", "Completed", "Cancelled"]
+            status_order = ["In progress", "Not started", "On hold", "Done", "Cancelled"]
             
             # Status emojis
             status_emojis = {
                 "Not started": "⚪",  # Grey/white
                 "On hold": "🟠",     # Orange
                 "In progress": "🔵", # Blue
-                "Completed": "🟢",   # Green
+                "Done": "🟢",   # Green
                 "Cancelled": "🔴"    # Red
             }
 
@@ -568,14 +570,14 @@ class NotionCommands(commands.Cog):
                 grouped_tasks[task.status].append(task)
 
             # Status order for display
-            status_order = ["In progress", "Not started", "On hold", "Completed", "Cancelled"]
+            status_order = ["In progress", "Not started", "On hold", "Done", "Cancelled"]
             
             # Status emojis
             status_emojis = {
                 "Not started": "⚪",  # Grey/white
                 "On hold": "🟠",     # Orange
                 "In progress": "🔵", # Blue
-                "Completed": "🟢",   # Green
+                "Done": "🟢",   # Green
                 "Cancelled": "🔴"    # Red
             }
 
@@ -1492,6 +1494,237 @@ class NotionCommands(commands.Cog):
                 ephemeral=True
             )
             logger.error(f"Error searching Notion resources: {e}")
+
+    @project_group.command(
+        name="create", 
+        description="Create a new project in Notion"
+    )
+    @app_commands.describe(
+        title="Title of the project (required)",
+        status="Status of the project (required)",
+        start_date="Start date (required, e.g., 01-15-2024 or January 15, 2024)",
+        end_date="End date (required, e.g., 03-15-2024 or March 15, 2024)",
+        description="Description of the project (optional)"
+    )
+    async def create_project(
+        self,
+        interaction: discord.Interaction,
+        title: str,
+        status: str,
+        start_date: str,
+        end_date: str,
+        description: str = None
+    ):
+        """Create a new project in Notion database."""
+        await interaction.response.defer()
+        
+        command_id = f"{interaction.user.id}_{interaction.id}_{title[:50]}"
+        logger.info(f"Processing project creation command: {command_id}")
+
+        try:
+            # Validate required inputs
+            if len(title.strip()) == 0:
+                await interaction.followup.send(
+                    "❌ Title cannot be empty!", 
+                    ephemeral=True
+                )
+                return
+
+            if len(status.strip()) == 0:
+                await interaction.followup.send(
+                    "❌ Status cannot be empty!", 
+                    ephemeral=True
+                )
+                return
+
+            if len(start_date.strip()) == 0:
+                await interaction.followup.send(
+                    "❌ Start date cannot be empty!", 
+                    ephemeral=True
+                )
+                return
+
+            if len(end_date.strip()) == 0:
+                await interaction.followup.send(
+                    "❌ End date cannot be empty!", 
+                    ephemeral=True
+                )
+                return
+
+            # Validate field lengths
+            if len(title) > 500:
+                await interaction.followup.send(
+                    "❌ Title is too long (max 500 characters)!", 
+                    ephemeral=True
+                )
+                return
+
+            # Validate status
+            valid_statuses = {
+                status.value.lower(): status for status in ProjectStatus
+            }
+            
+            status_lower = status.lower()
+            if status_lower not in valid_statuses:
+                status_options = [status.value for status in ProjectStatus]
+                await interaction.followup.send(
+                    f"❌ Invalid status! Valid options: {', '.join(status_options)}",
+                    ephemeral=True
+                )
+                return
+            
+            project_status = valid_statuses[status_lower]
+
+            # Parse dates
+            try:
+                start_datetime = date_parser.parse(start_date.strip())
+                end_datetime = date_parser.parse(end_date.strip())
+            except (ValueError, TypeError):
+                await interaction.followup.send(
+                    "❌ Invalid date format! Please use formats like 'MM-DD-YYYY' or 'January 15, 2024'.",
+                    ephemeral=True
+                )
+                return
+
+            # Validate date range
+            if end_datetime < start_datetime:
+                await interaction.followup.send(
+                    "❌ End date cannot be before start date!",
+                    ephemeral=True
+                )
+                return
+
+            # Check for recent duplicate projects (within last 60 seconds)
+            async with AsyncSessionLocal() as session:
+                from sqlalchemy import select
+                from datetime import timedelta
+                
+                recent_cutoff = datetime.utcnow() - timedelta(seconds=60)
+                
+                duplicate_check = await session.execute(
+                    select(NotionProject).where(
+                        NotionProject.title == title.strip(),
+                        NotionProject.created_at > recent_cutoff
+                    )
+                )
+                
+                existing_project = duplicate_check.scalar_one_or_none()
+                
+                if existing_project:
+                    logger.warning(f"Duplicate project detected for command {command_id}, skipping creation")
+                    await interaction.followup.send(
+                        f"⚠️ A project with the same title was just created! Project ID: {existing_project.id}",
+                        ephemeral=True
+                    )
+                    return
+
+            # Get Notion client
+            notion_client = get_notion_client()
+            
+            # Create project in Notion
+            logger.info(f"Creating Notion project: '{title.strip()}'")
+            notion_response = await notion_client.create_project(
+                title=title.strip(),
+                status=project_status.value,
+                start_date=start_datetime,
+                end_date=end_datetime,
+                description=description.strip() if description else None,
+                discord_user_id=str(interaction.user.id)
+            )
+            logger.info(f"Notion project created successfully with ID: {notion_response['id']}")
+
+            # Save to local database
+            async with AsyncSessionLocal() as session:
+                project = NotionProject(
+                    notion_page_id=notion_response["id"],
+                    notion_database_id=notion_client.projects_database_id,
+                    title=title.strip(),
+                    description=description.strip() if description else None,
+                    status=project_status,
+                    start_date=start_datetime,
+                    end_date=end_datetime,
+                    discord_user_id=str(interaction.user.id),
+                    discord_message_id=str(interaction.message.id) if interaction.message else None,
+                    discord_channel_id=str(interaction.channel_id),
+                    notion_url=notion_response.get("url"),
+                    notion_properties=notion_response.get("properties", {}),
+                    last_synced=datetime.utcnow(),
+                    sync_status="completed"
+                )
+
+                session.add(project)
+                logger.info(f"Saving project to local database: {title.strip()}")
+                await session.commit()
+                await session.refresh(project)
+                logger.info(f"Project saved to database with ID: {project.id}")
+
+            # Create embed for response
+            embed = discord.Embed(
+                title="🚀 New project created!",
+                description=f"**{title.strip()}**",
+                color=0x3498db  # Blue color for projects
+            )
+            
+            embed.add_field(
+                name="📊 Status",
+                value=project_status.value,
+                inline=True
+            )
+            
+            embed.add_field(
+                name="📅 Duration",
+                value=f"{start_datetime.strftime('%B %d, %Y')} → {end_datetime.strftime('%B %d, %Y')}",
+                inline=False
+            )
+            
+            if description:
+                embed.add_field(
+                    name="📝 Description",
+                    value=description.strip()[:1000] + ("..." if len(description.strip()) > 1000 else ""),
+                    inline=False
+                )
+
+            await interaction.followup.send(embed=embed)
+
+            logger.info(f"Project created: {title} by {interaction.user.name}")
+
+        except ValueError as e:
+            await interaction.followup.send(
+                f"❌ Configuration error: {str(e)}\nPlease contact an administrator.",
+                ephemeral=True
+            )
+            logger.error(f"Notion configuration error: {e}")
+
+        except Exception as e:
+            await interaction.followup.send(
+                "❌ Failed to create project. Please try again later.",
+                ephemeral=True
+            )
+            logger.error(f"Error creating Notion project: {e}")
+
+    @create_project.autocomplete('status')
+    async def project_status_autocomplete(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+    ) -> list[app_commands.Choice[str]]:
+        """Autocomplete for project status."""
+        try:
+            statuses = [status.value for status in ProjectStatus]
+            return [
+                app_commands.Choice(name=status, value=status)
+                for status in statuses
+                if current.lower() in status.lower()
+            ][:25]  # Discord limit
+        except Exception as e:
+            logger.error(f"Project status autocomplete error: {e}")
+            # Return basic statuses as fallback
+            basic_statuses = ["Not started", "In progress", "On hold", "Done", "Cancelled"]
+            return [
+                app_commands.Choice(name=status, value=status)
+                for status in basic_statuses
+                if current.lower() in status.lower()
+            ][:25]
 
 
 async def setup(bot: commands.Bot):
