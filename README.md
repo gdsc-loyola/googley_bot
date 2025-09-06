@@ -124,7 +124,7 @@ googley_bot/
 
 ## 🧩 Architecture
 
-IRA Bot follows a modular architecture designed for scalability, maintainability, and extensibility:
+Googley Bot follows a modular architecture designed for scalability, maintainability, and extensibility:
 
 ### **Layered Design**
 - **Bot Layer**: Discord.py client setup and event handling
