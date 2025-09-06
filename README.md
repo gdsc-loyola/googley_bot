@@ -74,7 +74,7 @@ DISCORD_GUILD_ID=your_server_id_here
 
 # GitHub Integration
 GITHUB_TOKEN=ghp_your_github_token_here
-GITHUB_ORG=hirayainteractive
+GITHUB_ORG=gdsc-loyola
 
 # Notion Integration
 NOTION_TOKEN=secret_your_notion_token_here
